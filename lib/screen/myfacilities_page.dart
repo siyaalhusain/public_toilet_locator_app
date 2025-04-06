@@ -36,15 +36,17 @@ class MyFacilitiesPage extends StatelessWidget {
       ),
       floatingActionButton: loggedInUserRole == "owner"
           ? FloatingActionButton(
-        onPressed: () {
-          // Add logic to add a new facility
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Feature to add a new facility coming soon!")),
-          );
-        },
-        child: Icon(Icons.add),
-        tooltip: "Add Facility",
-      )
+              onPressed: () {
+                // Add logic to add a new facility
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                      content:
+                          Text("Feature to add a new facility coming soon!")),
+                );
+              },
+              child: Icon(Icons.add),
+              tooltip: "Add Facility",
+            )
           : null, // Only show the button if the user role is "owner"
     );
   }

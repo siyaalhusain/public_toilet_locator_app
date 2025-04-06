@@ -5,11 +5,11 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:location/location.dart'; // Import the location package
 import 'package:project_x/screen/profile_page.dart';
-import 'explore_page.dart';
 import 'notifications_page.dart';
 import 'search_page.dart';
 import 'login_page.dart';
 import 'package:http/http.dart' as http;
+import 'Filter_page.dart'; // Ensure this import is correct
 
 class HomePage extends StatefulWidget {
   final String loggedInUserRole;
@@ -25,10 +25,13 @@ class _HomePageState extends State<HomePage> {
   final Set<Marker> _markers = {};
   final Set<Polyline> _polylines = {}; // Set to store the polylines
   late GoogleMapController _mapController;
+  String _selectedRating = "Any"; // Default value
+  List<String> _selectedAmenities = [];
+  List<Map<String, dynamic>> allToilets = []; // Store all toilet data
 
   // Firestore reference to the toilets collection
   final CollectionReference toiletsCollection =
-  FirebaseFirestore.instance.collection('toilets');
+      FirebaseFirestore.instance.collection('toilets');
 
   // User's current location
   LatLng? _userLocation;
@@ -38,6 +41,61 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _loadMarkers();
     _getUserLocation(); // Get user location on init
+  }
+
+  void _openFilterPage() async {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => FilterPage(
+          onApplyFilter: (selectedRating, selectedAmenities) {
+            setState(() {
+              _selectedRating = selectedRating;
+              _selectedAmenities = selectedAmenities;
+            });
+            _applyFilters(); // Apply filtering logic
+          },
+        ),
+      ),
+    );
+  }
+
+  void _applyFilters() {
+    print(
+        "Filtering toilets with rating: $_selectedRating and amenities: $_selectedAmenities");
+
+    if (_selectedRating == "Any" && _selectedAmenities.isEmpty) {
+      _loadMarkers(); // Load all toilets when filters are cleared
+    } else {
+      _fetchFilteredToilets(); // Apply the filters
+    }
+  }
+
+  void _fetchFilteredToilets() {
+    setState(() {
+      _markers.clear(); // Clear markers before filtering
+
+      for (var toilet in allToilets) {
+        String toiletRating = toilet['rating'].toString();
+        List<String> toiletAmenities = List<String>.from(toilet['amenities']);
+
+        bool ratingMatches = (_selectedRating == "Any" ||
+            double.parse(toiletRating) >= double.parse(_selectedRating[0]));
+        bool amenitiesMatch = _selectedAmenities
+            .every((amenity) => toiletAmenities.contains(amenity));
+
+        if (ratingMatches && amenitiesMatch) {
+          _markers.add(
+            Marker(
+              markerId: MarkerId(toilet['id']),
+              position: LatLng(toilet['location']['latitude'],
+                  toilet['location']['longitude']),
+              infoWindow: InfoWindow(title: toilet['name']),
+            ),
+          );
+        }
+      }
+    });
   }
 
   // Get the current location of the user
@@ -73,38 +131,47 @@ class _HomePageState extends State<HomePage> {
 
   // Fetch and load markers from Firestore
   void _loadMarkers() async {
-    QuerySnapshot querySnapshot = await toiletsCollection.get();
-    for (var doc in querySnapshot.docs) {
-      var data = doc.data() as Map<String, dynamic>;
+    try {
+      QuerySnapshot querySnapshot =
+          await FirebaseFirestore.instance.collection('toilets').get();
+      print("Fetched ${querySnapshot.docs.length} documents from Firestore.");
 
-      double latitude = data['location']['latitude'];
-      double longitude = data['location']['longitude'];
-      String amenities = data['amenities'] ?? 'No amenities listed';
-      String name = data['name'] ?? 'Unnamed Toilet';
-      Timestamp timestamp = data['timestamp'];
-      DateTime time = timestamp.toDate();
+      Set<Marker> newMarkers = {}; // Temporary set to store markers
+      List<Map<String, dynamic>> toiletsList = []; // Temporary list for toilets
+      for (var doc in querySnapshot.docs) {
+        var data = doc.data() as Map<String, dynamic>;
+        print("Document Data: $data"); // Debugging print
+
+        if (data.containsKey('location') && data['location'] != null) {
+          double? latitude = (data['location']['latitude'] as num?)?.toDouble();
+          double? longitude =
+              (data['location']['longitude'] as num?)?.toDouble();
+          String name = data['name'] ?? 'Unnamed Toilet';
+
+          if (latitude != null && longitude != null) {
+            newMarkers.add(
+              Marker(
+                markerId: MarkerId(doc.id),
+                position: LatLng(latitude, longitude),
+                infoWindow: InfoWindow(title: name),
+              ),
+            );
+          } else {
+            print("⚠ Invalid coordinates in document ${doc.id}");
+          }
+        } else {
+          print("⚠ Missing location data in document ${doc.id}");
+        }
+      }
 
       setState(() {
-        _markers.add(
-          Marker(
-            markerId: MarkerId(doc.id),
-            position: LatLng(latitude, longitude),
-            infoWindow: InfoWindow(
-              title: name,
-              snippet: 'Amenities: $amenities\nLast updated: ${time.toLocal()}',
-            ),
-            onTap: () async {
-              if (_userLocation != null) {
-                String duration = await _getDirections(
-                  _userLocation!,
-                  LatLng(latitude, longitude),
-                );
-                _showRouteDialog(name, duration);
-              }
-            },
-          ),
-        );
+        _markers.clear(); // Clear existing markers
+        _markers.addAll(newMarkers); // Add new markers
       });
+
+      print("✅ Markers loaded successfully");
+    } catch (e) {
+      print("❌ Error loading markers: $e");
     }
   }
 
@@ -125,7 +192,8 @@ class _HomePageState extends State<HomePage> {
 
           List<LatLng> polylinePoints = [];
           for (var step in steps) {
-            polylinePoints.add(LatLng(step['end_location']['lat'], step['end_location']['lng']));
+            polylinePoints.add(LatLng(
+                step['end_location']['lat'], step['end_location']['lng']));
           }
 
           // Create a polyline and add it to the map
@@ -174,9 +242,28 @@ class _HomePageState extends State<HomePage> {
 
   void _onItemTapped(int index) {
     if (index == 1) {
+      // Example toilet data (replace with actual data from Firestore)
+      Map<String, dynamic> exampleToiletData = {
+        'name': 'Example Toilet',
+        'location': {'latitude': 37.7749, 'longitude': -122.4194},
+        'average_rating': 4.5,
+        'amenities': ['male', 'female', 'accessible'],
+      };
+
+      // Navigate to DetailsPage with toiletId and toiletData
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (context) => ExplorePage()),
+        MaterialPageRoute(
+          builder: (context) => FilterPage(
+            onApplyFilter: (selectedRating, selectedAmenities) {
+              setState(() {
+                _selectedRating = selectedRating;
+                _selectedAmenities = selectedAmenities;
+              });
+              _applyFilters();
+            },
+          ),
+        ),
       );
     } else if (index == 2) {
       Navigator.push(
@@ -208,15 +295,6 @@ class _HomePageState extends State<HomePage> {
         title: const Text('Home'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.search),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => SearchPage()),
-              );
-            },
-          ),
-          IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () async {
               await FirebaseAuth.instance.signOut();
@@ -230,30 +308,172 @@ class _HomePageState extends State<HomePage> {
       ),
       body: Stack(
         children: [
+          // ✅ Google Map as the Background
           GoogleMap(
             initialCameraPosition: _userLocation != null
                 ? CameraPosition(
-              target: _userLocation!, // Set the camera position to the user's location
-              zoom: 12,
-            )
+                    target: _userLocation!, // User's location
+                    zoom: 12,
+                  )
                 : CameraPosition(
-              target: LatLng(37.7749, -122.4194), // Default location (San Francisco)
-              zoom: 12,
-            ),
+                    target:
+                        LatLng(37.7749, -122.4194), // Default (San Francisco)
+                    zoom: 12,
+                  ),
             markers: _markers,
-            polylines: _polylines, // Add the polylines to the map
+            polylines: _polylines, // Display polylines
             onMapCreated: (controller) {
               _mapController = controller;
             },
-            myLocationEnabled: true, // Show the user location on the map
+            myLocationEnabled: true, // Show user location
           ),
-          if (_selectedIndex == 0)
-            Center(
-              child: Text(
-                'Welcome, ${widget.loggedInUserRole}',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          // ✅ View Reviews Section (Draggable Bottom Sheet)
+          DraggableScrollableSheet(
+            initialChildSize: 0.1, // Minimized state (10% of screen height)
+            minChildSize: 0.1, // Minimum size
+            maxChildSize: 0.5, // Expandable up to 50% of screen height
+            builder: (context, scrollController) {
+              return Container(
+                padding: EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(20),
+                    topRight: Radius.circular(20),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black26,
+                      blurRadius: 8,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    // 🔽 Drag Handle
+                    Container(
+                      width: 50,
+                      height: 5,
+                      decoration: BoxDecoration(
+                        color: Colors.grey[300],
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    SizedBox(height: 10),
+
+                    // 📢 Title: Reviews Section
+                    Text(
+                      "Reviews Near Toilets",
+                      style:
+                          TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                    Divider(),
+
+                    // 📝 Reviews List
+                    Expanded(
+                      child: FutureBuilder<QuerySnapshot>(
+                        future: FirebaseFirestore.instance
+                            .collection('reviews')
+                            .get(),
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState ==
+                              ConnectionState.waiting) {
+                            return Center(child: CircularProgressIndicator());
+                          }
+                          if (!snapshot.hasData ||
+                              snapshot.data!.docs.isEmpty) {
+                            return Center(child: Text("No reviews available."));
+                          }
+
+                          return ListView(
+                            controller: scrollController,
+                            children: snapshot.data!.docs.map((doc) {
+                              var review = doc.data() as Map<String, dynamic>;
+                              return ListTile(
+                                leading: Icon(Icons.star, color: Colors.orange),
+                                title: Text(
+                                    review['toilet_name'] ?? "Unknown Toilet"),
+                                subtitle:
+                                    Text(review['comment'] ?? "No Comment"),
+                                trailing: Text(
+                                  "${review['rating']} ⭐",
+                                  style: TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                              );
+                            }).toList(),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+
+          // ✅ Positioned Search Button (One-Third Down)
+          Positioned(
+            top: MediaQuery.of(context).size.height / 6, // 1/6 of screen height
+            left: 20,
+            right: 20,
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.lightBlue, // Solid light blue background color
+                borderRadius: BorderRadius.circular(20), // Rounded corners
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    spreadRadius: 2,
+                    blurRadius: 5,
+                    offset: const Offset(0, 3), // Shadow effect
+                  ),
+                ],
+              ),
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                  backgroundColor: Colors
+                      .transparent, // Remove default background color to show light blue
+                  shadowColor:
+                      Colors.transparent, // Remove shadow from button itself
+                ),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => SearchPage()),
+                  );
+                },
+                child: Row(
+                  children: [
+                    // Search Icon on the Left, with small distance from left
+                    const SizedBox(
+                        width: 10), // Small gap between left and icon
+                    const Icon(Icons.search,
+                        color: Colors.white), // White icon color
+
+                    // Spacer to center the text
+                    const SizedBox(
+                        width: 10), // Space between the icon and the text
+
+                    // Centered Text, also white color
+                    Expanded(
+                      child: Text(
+                        'Search Toilets',
+                        textAlign: TextAlign
+                            .center, // Center the text in the remaining space
+                        style: const TextStyle(
+                            fontSize: 18, color: Colors.white), // White text
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
+          ),
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
@@ -263,12 +483,33 @@ class _HomePageState extends State<HomePage> {
         unselectedItemColor: Colors.grey,
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(icon: Icon(Icons.explore), label: 'Explore'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.filter), label: 'Filter'), // Updated here
           BottomNavigationBarItem(
               icon: Icon(Icons.notifications), label: 'Notifications'),
           BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profile'),
         ],
       ),
     );
+  }
+}
+
+class ToiletProvider extends ChangeNotifier {
+  List<Map<String, dynamic>> toilets = [];
+
+  Future<void> fetchToilets() async {
+    QuerySnapshot snapshot =
+        await FirebaseFirestore.instance.collection('toilets').get();
+
+    toilets = snapshot.docs.map((doc) {
+      return {
+        'id': doc.id,
+        'name': doc['name'],
+        'latitude': doc['latitude'],
+        'longitude': doc['longitude'],
+      };
+    }).toList();
+
+    notifyListeners();
   }
 }

@@ -8,8 +8,10 @@ class AssignMaintainerPage extends StatefulWidget {
 }
 
 class _AssignMaintainerPageState extends State<AssignMaintainerPage> {
-  final TextEditingController _maintainerEmailController = TextEditingController();
-  final TextEditingController _maintainerPasswordController = TextEditingController();
+  final TextEditingController _maintainerEmailController =
+      TextEditingController();
+  final TextEditingController _maintainerPasswordController =
+      TextEditingController();
   final TextEditingController _toiletIdController = TextEditingController();
 
   void _assignMaintainer() async {
@@ -30,7 +32,8 @@ class _AssignMaintainerPageState extends State<AssignMaintainerPage> {
         'email': email,
         'password': password,
         'toiletId': toiletId,
-        'assignedBy': FirebaseAuth.instance.currentUser?.email ?? "Unknown Owner",
+        'assignedBy':
+            FirebaseAuth.instance.currentUser?.email ?? "Unknown Owner",
         'createdAt': FieldValue.serverTimestamp(),
       });
 

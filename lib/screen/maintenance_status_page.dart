@@ -64,8 +64,8 @@ class MaintenanceStatusPage extends StatelessWidget {
                     color: task['status'] == 'Completed'
                         ? Colors.green
                         : task['status'] == 'Pending'
-                        ? Colors.red
-                        : Colors.orange,
+                            ? Colors.red
+                            : Colors.orange,
                   ),
                 ),
                 onTap: () {
@@ -82,15 +82,17 @@ class MaintenanceStatusPage extends StatelessWidget {
       ),
       floatingActionButton: loggedInUserRole == "maintainer"
           ? FloatingActionButton(
-        onPressed: () {
-          // Add logic to add a new maintenance task or update the status
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Feature to add a new maintenance task coming soon!")),
-          );
-        },
-        child: Icon(Icons.add),
-        tooltip: "Add Maintenance Task",
-      )
+              onPressed: () {
+                // Add logic to add a new maintenance task or update the status
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                      content: Text(
+                          "Feature to add a new maintenance task coming soon!")),
+                );
+              },
+              child: Icon(Icons.add),
+              tooltip: "Add Maintenance Task",
+            )
           : null, // Only show the button if the user role is "maintainer"
     );
   }

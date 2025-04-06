@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:location/location.dart';
 
 class GoogleMapPage extends StatefulWidget {
   @override
@@ -19,7 +20,8 @@ class _GoogleMapPageState extends State<GoogleMapPage> {
 
   // Fetch toilet locations from Firestore
   void _fetchToiletLocations() async {
-    final toilets = await FirebaseFirestore.instance.collection('toilets').get();
+    final toilets =
+        await FirebaseFirestore.instance.collection('toilets').get();
     setState(() {
       for (var toilet in toilets.docs) {
         GeoPoint location = toilet['location'];
