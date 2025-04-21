@@ -2,8 +2,20 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class AddToiletPage extends StatefulWidget {
+  final bool isEditing;
+  final String? toiletId;
+  final Map<String, dynamic>? toiletData;
+
+  const AddToiletPage({
+    Key? key,
+    this.isEditing = false,
+    this.toiletId,
+    this.toiletData,
+  }) : super(key: key);
+
   @override
   _AddToiletPageState createState() => _AddToiletPageState();
 }
@@ -11,6 +23,7 @@ class AddToiletPage extends StatefulWidget {
 class _AddToiletPageState extends State<AddToiletPage> {
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _toiletNameController = TextEditingController();
+  final FirebaseAuth _auth = FirebaseAuth.instance;
 
   LatLng? _selectedLocation;
   bool _isSubmitting = false;
@@ -33,9 +46,60 @@ class _AddToiletPageState extends State<AddToiletPage> {
   Set<String> selectedAmenities = {};
 
   @override
+  void initState() {
+    super.initState();
+    _getCurrentUser();
+
+    // If editing, populate the form with existing data
+    if (widget.isEditing && widget.toiletData != null) {
+      _populateFormWithExistingData();
+    }
+  }
+
+  void _populateFormWithExistingData() {
+    final data = widget.toiletData!;
+
+    // Set toilet name
+    if (data['name'] != null) {
+      _toiletNameController.text = data['name'];
+    }
+
+    // Set selected amenities
+    if (data['amenities'] != null && data['amenities'] is List) {
+      setState(() {
+        selectedAmenities = Set<String>.from(data['amenities']);
+      });
+    }
+
+    // Set selected location
+    if (data['location'] != null) {
+      final location = data['location'];
+      if (location['latitude'] != null && location['longitude'] != null) {
+        setState(() {
+          _selectedLocation = LatLng(
+            location['latitude'],
+            location['longitude'],
+          );
+        });
+      }
+    }
+  }
+
+  @override
   void dispose() {
     _toiletNameController.dispose();
     super.dispose();
+  }
+
+  void _getCurrentUser() {
+    // No need to set current user for editing, as we already have the data
+    // This is just for new toilet creation
+    if (!widget.isEditing) {
+      final user = _auth.currentUser;
+      if (user == null) {
+        // Handle not logged in case
+      }
+    }
   }
 
   void _selectLocation(LatLng position) {
@@ -136,29 +200,75 @@ class _AddToiletPageState extends State<AddToiletPage> {
       });
 
       final toiletName = _toiletNameController.text;
+      final user = _auth.currentUser;
+
+      if (user == null && !widget.isEditing) {
+        _showSnackBar(
+            'You must be logged in to add a toilet', Colors.red, Icons.error);
+        setState(() {
+          _isSubmitting = false;
+        });
+        return;
+      }
 
       try {
-        await FirebaseFirestore.instance.collection('toilets').add({
+        // Data to save
+        final toiletData = {
           'name': toiletName,
           'amenities': selectedAmenities.toList(),
           'location': {
             'latitude': _selectedLocation!.latitude,
             'longitude': _selectedLocation!.longitude,
           },
-          'rating': 0.0,
-          'timestamp': FieldValue.serverTimestamp(),
-        });
+        };
 
-        _showSnackBar('Toilet "$toiletName" added successfully!', Colors.green,
-            Icons.check_circle);
+        // If creating new toilet (not editing)
+        if (!widget.isEditing) {
+          // Add additional fields for new toilet
+          toiletData.addAll({
+            'rating': 0.0,
+            'timestamp': FieldValue.serverTimestamp(),
+            'ownerId': user!.uid,
+            'ownerEmail':
+                user.email ?? '', // Add empty string fallback for null
+          });
 
-        _formKey.currentState!.reset();
-        setState(() {
-          _selectedLocation = null;
-          selectedAmenities.clear();
-        });
+          // Create new document
+          await FirebaseFirestore.instance
+              .collection('toilets')
+              .add(toiletData);
+
+          _showSnackBar('Toilet "$toiletName" added successfully!',
+              Colors.green, Icons.check_circle);
+
+          // Clear form after submission
+          _formKey.currentState!.reset();
+          setState(() {
+            _selectedLocation = null;
+            selectedAmenities.clear();
+          });
+        }
+        // If editing existing toilet
+        else if (widget.toiletId != null) {
+          // Update existing document
+          await FirebaseFirestore.instance
+              .collection('toilets')
+              .doc(widget.toiletId)
+              .update(toiletData);
+
+          _showSnackBar('Toilet "$toiletName" updated successfully!',
+              Colors.green, Icons.check_circle);
+
+          // Return to the previous screen after updating
+          Future.delayed(Duration(seconds: 1), () {
+            Navigator.pop(context);
+          });
+        }
       } catch (e) {
-        _showSnackBar('Error adding toilet: $e', Colors.red, Icons.error);
+        _showSnackBar(
+            'Error ${widget.isEditing ? 'updating' : 'adding'} toilet: $e',
+            Colors.red,
+            Icons.error);
       } finally {
         setState(() {
           _isSubmitting = false;
@@ -174,7 +284,7 @@ class _AddToiletPageState extends State<AddToiletPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Add Toilet'),
+        title: Text(widget.isEditing ? 'Edit Toilet' : 'Add Toilet'),
         elevation: 0,
       ),
       body: Column(
@@ -406,7 +516,7 @@ class _AddToiletPageState extends State<AddToiletPage> {
                                   Text('Submitting...'),
                                 ],
                               )
-                            : Text('Submit'),
+                            : Text(widget.isEditing ? 'Update' : 'Submit'),
                         style: ElevatedButton.styleFrom(
                           minimumSize: Size(double.infinity, 46),
                           shape: RoundedRectangleBorder(

@@ -1,15 +1,21 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:location/location.dart'; // Import the location package
-import 'package:project_x/screen/profile_page.dart';
-import 'notifications_page.dart';
-import 'search_page.dart';
-import 'login_page.dart';
+
+import 'package:geolocator/geolocator.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter_rating_bar/flutter_rating_bar.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
-import 'Filter_page.dart'; // Ensure this import is correct
+import 'AddCommentPage.dart' show AddCommentPage;
+import 'profile_page.dart';
+import 'notifications_page.dart';
+import 'login_page.dart';
+import 'filter_page.dart';
 
 class HomePage extends StatefulWidget {
   final String loggedInUserRole;
@@ -23,26 +29,471 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _selectedIndex = 0;
   final Set<Marker> _markers = {};
-  final Set<Polyline> _polylines = {}; // Set to store the polylines
+  final Set<Polyline> _polylines = {};
   late GoogleMapController _mapController;
-  String _selectedRating = "Any"; // Default value
+  String _selectedRating = "Any";
   List<String> _selectedAmenities = [];
-  List<Map<String, dynamic>> allToilets = []; // Store all toilet data
-
-  // Firestore reference to the toilets collection
+  List<Map<String, dynamic>> allToilets = [];
+  LatLng? _userLocation;
+  TextEditingController _searchController = TextEditingController();
+  List<QueryDocumentSnapshot> _searchResults = [];
+  List<Map<String, dynamic>> _searchHistory = [];
+  bool _showCombinedList = false;
   final CollectionReference toiletsCollection =
       FirebaseFirestore.instance.collection('toilets');
-
-  // User's current location
-  LatLng? _userLocation;
+  Completer<GoogleMapController> _controller = Completer();
 
   @override
   void initState() {
     super.initState();
     _loadMarkers();
-    _getUserLocation(); // Get user location on init
+    _getUserLocation();
+    _loadSearchHistory();
   }
 
+  // Load search history from shared preferences
+  Future<void> _loadSearchHistory() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    List<String>? storedData = prefs.getStringList('search_history');
+
+    if (storedData != null) {
+      setState(() {
+        _searchHistory = storedData
+            .map((item) => json.decode(item) as Map<String, dynamic>)
+            .toList();
+      });
+    }
+  }
+
+  // Save search to history
+  Future<void> _saveSearchHistory(Map<String, dynamic> searchData) async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    _searchHistory.add(searchData);
+
+    // Convert list of maps to a list of JSON strings
+    List<String> encodedList =
+        _searchHistory.map((item) => json.encode(item)).toList();
+
+    await prefs.setStringList('search_history', encodedList);
+    setState(() {});
+  }
+
+  // Get user location
+  void _getUserLocation() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      return;
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      return;
+    }
+
+    Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high);
+
+    setState(() {
+      _userLocation = LatLng(position.latitude, position.longitude);
+      _markers.add(
+        Marker(
+          markerId: MarkerId("current_location"),
+          position: _userLocation!,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+          infoWindow: InfoWindow(title: "You are here"),
+        ),
+      );
+    });
+
+    if (_mapController != null) {
+      _mapController.animateCamera(
+        CameraUpdate.newLatLngZoom(_userLocation!, 14),
+      );
+    }
+  }
+
+  // Load all toilet markers
+  void _loadMarkers() async {
+    try {
+      QuerySnapshot querySnapshot = await toiletsCollection.get();
+      Set<Marker> newMarkers = {};
+      List<Map<String, dynamic>> toiletsList = [];
+
+      for (var doc in querySnapshot.docs) {
+        var data = doc.data() as Map<String, dynamic>;
+        if (data.containsKey('location') && data['location'] != null) {
+          double? latitude = (data['location']['latitude'] as num?)?.toDouble();
+          double? longitude =
+              (data['location']['longitude'] as num?)?.toDouble();
+          String name = data['name'] ?? 'Unnamed Toilet';
+
+          if (latitude != null && longitude != null) {
+            newMarkers.add(
+              Marker(
+                markerId: MarkerId(doc.id),
+                position: LatLng(latitude, longitude),
+                infoWindow: InfoWindow(
+                  title: name,
+                  onTap: () {
+                    _showToiletDetails(data);
+                  },
+                ),
+              ),
+            );
+            toiletsList.add({
+              'id': doc.id,
+              'name': name,
+              'location': data['location'],
+              'rating': data['rating'] ?? 0.0,
+              'amenities': data['amenities'] ?? [],
+            });
+          }
+        }
+      }
+
+      setState(() {
+        _markers.clear();
+        _markers.addAll(newMarkers);
+        allToilets = toiletsList;
+      });
+    } catch (e) {
+      print("Error loading markers: $e");
+    }
+  }
+
+  // Search toilets by name
+  // Search toilets by name
+  void _searchToilets(String query) async {
+    if (query.isEmpty) {
+      setState(() {
+        _searchResults = [];
+        _showCombinedList = false;
+      });
+      return;
+    }
+
+    QuerySnapshot snapshot = await toiletsCollection.get();
+    Set<Marker> markers = {};
+    List<QueryDocumentSnapshot> searchResults = [];
+
+    for (var doc in snapshot.docs) {
+      var data = doc.data() as Map<String, dynamic>;
+      if (data.containsKey('name') && data.containsKey('location')) {
+        String toiletName = data['name'].toString().toLowerCase();
+        if (toiletName.contains(query.toLowerCase())) {
+          searchResults.add(doc);
+
+          double toiletLat = data['location']['latitude'];
+          double toiletLng = data['location']['longitude'];
+
+          markers.add(
+            Marker(
+              markerId: MarkerId(doc.id),
+              position: LatLng(toiletLat, toiletLng),
+              infoWindow: InfoWindow(
+                title: data['name'] ?? 'Unnamed Toilet',
+                snippet: "Tap for details",
+                onTap: () {
+                  _showToiletDetails(data);
+                },
+              ),
+            ),
+          );
+
+          if (!_searchHistory.any((history) => history['id'] == doc.id)) {
+            _saveSearchHistory({
+              'id': doc.id,
+              'name': data['name'],
+              'location': data['location']
+            });
+          }
+        }
+      }
+    }
+
+    setState(() {
+      _searchResults = searchResults;
+      if (markers.isNotEmpty) {
+        _markers.clear();
+        if (_userLocation != null) {
+          // Add back the user's current location marker
+          _markers.add(
+            Marker(
+              markerId: MarkerId("current_location"),
+              position: _userLocation!,
+              icon: BitmapDescriptor.defaultMarkerWithHue(
+                  BitmapDescriptor.hueBlue),
+              infoWindow: InfoWindow(title: "You are here"),
+            ),
+          );
+        }
+        _markers.addAll(markers);
+      }
+      _showCombinedList = query.isNotEmpty;
+    });
+
+    // Immediately navigate to the first search result
+    if (searchResults.isNotEmpty && _mapController != null) {
+      var firstResult = searchResults.first.data() as Map<String, dynamic>;
+      double lat = firstResult['location']['latitude'];
+      double lng = firstResult['location']['longitude'];
+
+      // Animate to the location with appropriate zoom level
+      _mapController.animateCamera(
+        CameraUpdate.newLatLngZoom(
+          LatLng(lat, lng),
+          15.0, // Higher zoom level for better visibility
+        ),
+      );
+    }
+  }
+
+  // Show toilet details dialog
+  void _showToiletDetails(Map<String, dynamic> data) {
+    double toiletLat = data['location']['latitude'];
+    double toiletLng = data['location']['longitude'];
+    double avgRating = data['average_rating'] ?? 0.0;
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(15),
+          ),
+          title: Row(
+            children: [
+              Icon(Icons.wc, color: Colors.blue),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  data['name'] ?? "Toilet Details",
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.list_alt, color: Colors.blue),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        "Amenities: ${data['amenities']?.join(', ') ?? 'Not listed'}",
+                        style: TextStyle(fontSize: 14),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: 15),
+              Row(
+                children: [
+                  Icon(Icons.star, color: Colors.amber),
+                  SizedBox(width: 10),
+                  Text(
+                    "Rating:",
+                    style: TextStyle(fontWeight: FontWeight.w500),
+                  ),
+                  SizedBox(width: 5),
+                  RatingBarIndicator(
+                    rating: avgRating,
+                    itemBuilder: (context, _) => const Icon(
+                      Icons.star,
+                      color: Colors.amber,
+                    ),
+                    itemCount: 5,
+                    itemSize: 20.0,
+                  ),
+                  Text(
+                    " ($avgRating)",
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(
+                "Close",
+                style: TextStyle(color: Colors.grey),
+              ),
+            ),
+            ElevatedButton.icon(
+              icon: Icon(Icons.directions),
+              label: Text("Navigate"),
+              style: ElevatedButton.styleFrom(
+                foregroundColor: Colors.white,
+                backgroundColor: Colors.blue,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+              ),
+              onPressed: () {
+                Navigator.pop(context);
+                _getDirections(LatLng(toiletLat, toiletLng));
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // Get directions to a toilet
+  Future<void> _getDirections(LatLng destination) async {
+    if (_userLocation == null) {
+      return;
+    }
+
+    String googleAPIKey = 'AIzaSyC3AXw-RcPsAR5s9Cgr84chOLDYT575ZM4';
+    String url =
+        'https://maps.googleapis.com/maps/api/directions/json?origin=${_userLocation!.latitude},${_userLocation!.longitude}&destination=${destination.latitude},${destination.longitude}&key=$googleAPIKey';
+
+    try {
+      var response = await http.get(Uri.parse(url));
+      if (response.statusCode == 200) {
+        var jsonData = json.decode(response.body);
+        if (jsonData['status'] == 'OK') {
+          var route = jsonData['routes'][0]['legs'][0];
+          var steps = route['steps'];
+
+          List<LatLng> polylinePoints = [];
+          for (var step in steps) {
+            polylinePoints.add(LatLng(
+                step['end_location']['lat'], step['end_location']['lng']));
+          }
+
+          setState(() {
+            _polylines.clear();
+            _polylines.add(Polyline(
+              polylineId: PolylineId('route'),
+              points: polylinePoints,
+              color: Colors.blue,
+              width: 5,
+            ));
+          });
+
+          _mapController.animateCamera(
+            CameraUpdate.newLatLngZoom(destination, 14),
+          );
+
+          showDialog(
+            context: context,
+            builder: (context) {
+              return AlertDialog(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(15),
+                ),
+                title: Row(
+                  children: [
+                    Icon(Icons.directions, color: Colors.blue),
+                    SizedBox(width: 10),
+                    Text("Route Details"),
+                  ],
+                ),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: EdgeInsets.all(15),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.straighten, color: Colors.blue),
+                              SizedBox(width: 10),
+                              Text(
+                                "Distance: ${route['distance']['text']}",
+                                style: TextStyle(fontWeight: FontWeight.w500),
+                              ),
+                            ],
+                          ),
+                          SizedBox(height: 10),
+                          Row(
+                            children: [
+                              Icon(Icons.access_time, color: Colors.blue),
+                              SizedBox(width: 10),
+                              Text(
+                                "Estimated Time: ${route['duration']['text']}",
+                                style: TextStyle(fontWeight: FontWeight.w500),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: Text(
+                      "Close",
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ),
+                  ElevatedButton.icon(
+                    icon: Icon(Icons.map),
+                    label: Text("Open in Google Maps"),
+                    style: ElevatedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      backgroundColor: Colors.blue,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                    ),
+                    onPressed: () {
+                      _openGoogleMaps(
+                          destination.latitude, destination.longitude);
+                      Navigator.pop(context);
+                    },
+                  ),
+                ],
+              );
+            },
+          );
+        }
+      }
+    } catch (e) {
+      print("Error getting directions: $e");
+    }
+  }
+
+  // Open Google Maps app
+  void _openGoogleMaps(double lat, double lng) async {
+    String url = 'https://www.google.com/maps?q=$lat,$lng&z=14';
+    if (await canLaunch(url)) {
+      await launch(url);
+    } else {
+      throw 'Could not open the map';
+    }
+  }
+
+  // Filter functions
   void _openFilterPage() async {
     Navigator.push(
       context,
@@ -53,7 +504,7 @@ class _HomePageState extends State<HomePage> {
               _selectedRating = selectedRating;
               _selectedAmenities = selectedAmenities;
             });
-            _applyFilters(); // Apply filtering logic
+            _applyFilters();
           },
         ),
       ),
@@ -61,20 +512,76 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _applyFilters() {
-    print(
-        "Filtering toilets with rating: $_selectedRating and amenities: $_selectedAmenities");
-
     if (_selectedRating == "Any" && _selectedAmenities.isEmpty) {
-      _loadMarkers(); // Load all toilets when filters are cleared
+      _loadMarkers();
     } else {
-      _fetchFilteredToilets(); // Apply the filters
+      _fetchFilteredToilets();
     }
+  }
+// Add this method to your _HomePageState class
+
+// Method to fetch nearby toilets with reviews
+  Future<List<Map<String, dynamic>>> _getNearbyToiletsWithReviews() async {
+    if (_userLocation == null) return [];
+
+    try {
+      QuerySnapshot snapshot = await toiletsCollection.get();
+      List<Map<String, dynamic>> nearbyToilets = [];
+
+      for (var doc in snapshot.docs) {
+        var data = doc.data() as Map<String, dynamic>;
+        if (data.containsKey('location') && data['location'] != null) {
+          double? toiletLat =
+              (data['location']['latitude'] as num?)?.toDouble();
+          double? toiletLng =
+              (data['location']['longitude'] as num?)?.toDouble();
+
+          if (toiletLat != null && toiletLng != null) {
+            double distanceInKm = _calculateDistance(_userLocation!.latitude,
+                _userLocation!.longitude, toiletLat, toiletLng);
+
+            if (distanceInKm <= 10) {
+              // 10km radius
+              nearbyToilets.add({
+                'id': doc.id,
+                'name': data['name'] ?? 'Unnamed Toilet',
+                'address': data['address'] ?? 'No address',
+                'distance': distanceInKm,
+                'average_rating': data['average_rating'] ?? 0.0,
+                'reviewsCount': data['reviewsCount'] ?? 0,
+                'photoUrl': data['photoUrl'],
+                'location': data['location'],
+                'amenities': data['amenities'] ?? [],
+              });
+            }
+          }
+        }
+      }
+
+      // Sort by distance
+      nearbyToilets.sort((a, b) =>
+          (a['distance'] as double).compareTo(b['distance'] as double));
+
+      return nearbyToilets;
+    } catch (e) {
+      print("Error fetching nearby toilets with reviews: $e");
+      return [];
+    }
+  }
+
+// Helper method to calculate distance
+  double _calculateDistance(
+      double lat1, double lon1, double lat2, double lon2) {
+    const double p = 0.017453292519943295; // Math.PI / 180
+    double a = 0.5 -
+        cos((lat2 - lat1) * p) / 2 +
+        cos(lat1 * p) * cos(lat2 * p) * (1 - cos((lon2 - lon1) * p)) / 2;
+    return 12742 * asin(sqrt(a)); // 2 * R; R = 6371 km
   }
 
   void _fetchFilteredToilets() {
     setState(() {
-      _markers.clear(); // Clear markers before filtering
-
+      _markers.clear();
       for (var toilet in allToilets) {
         String toiletRating = toilet['rating'].toString();
         List<String> toiletAmenities = List<String>.from(toilet['amenities']);
@@ -90,7 +597,12 @@ class _HomePageState extends State<HomePage> {
               markerId: MarkerId(toilet['id']),
               position: LatLng(toilet['location']['latitude'],
                   toilet['location']['longitude']),
-              infoWindow: InfoWindow(title: toilet['name']),
+              infoWindow: InfoWindow(
+                title: toilet['name'],
+                onTap: () {
+                  _showToiletDetails(toilet);
+                },
+              ),
             ),
           );
         }
@@ -98,180 +610,22 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  // Get the current location of the user
-  void _getUserLocation() async {
-    Location location = Location();
-
-    bool _serviceEnabled = await location.serviceEnabled();
-    PermissionStatus _permissionGranted = await location.hasPermission();
-
-    if (!_serviceEnabled) {
-      await location.requestService();
-    }
-
-    if (_permissionGranted == PermissionStatus.denied) {
-      _permissionGranted = await location.requestPermission();
-    }
-
-    if (_permissionGranted == PermissionStatus.granted) {
-      var currentLocation = await location.getLocation();
-      setState(() {
-        _userLocation =
-            LatLng(currentLocation.latitude!, currentLocation.longitude!);
-      });
-
-      // Move the camera to the user's location
-      if (_mapController != null && _userLocation != null) {
-        _mapController.animateCamera(
-          CameraUpdate.newLatLng(_userLocation!),
-        );
-      }
-    }
-  }
-
-  // Fetch and load markers from Firestore
-  void _loadMarkers() async {
-    try {
-      QuerySnapshot querySnapshot =
-          await FirebaseFirestore.instance.collection('toilets').get();
-      print("Fetched ${querySnapshot.docs.length} documents from Firestore.");
-
-      Set<Marker> newMarkers = {}; // Temporary set to store markers
-      List<Map<String, dynamic>> toiletsList = []; // Temporary list for toilets
-      for (var doc in querySnapshot.docs) {
-        var data = doc.data() as Map<String, dynamic>;
-        print("Document Data: $data"); // Debugging print
-
-        if (data.containsKey('location') && data['location'] != null) {
-          double? latitude = (data['location']['latitude'] as num?)?.toDouble();
-          double? longitude =
-              (data['location']['longitude'] as num?)?.toDouble();
-          String name = data['name'] ?? 'Unnamed Toilet';
-
-          if (latitude != null && longitude != null) {
-            newMarkers.add(
-              Marker(
-                markerId: MarkerId(doc.id),
-                position: LatLng(latitude, longitude),
-                infoWindow: InfoWindow(title: name),
-              ),
-            );
-          } else {
-            print("⚠ Invalid coordinates in document ${doc.id}");
-          }
-        } else {
-          print("⚠ Missing location data in document ${doc.id}");
-        }
-      }
-
-      setState(() {
-        _markers.clear(); // Clear existing markers
-        _markers.addAll(newMarkers); // Add new markers
-      });
-
-      print("✅ Markers loaded successfully");
-    } catch (e) {
-      print("❌ Error loading markers: $e");
-    }
-  }
-
-  // Method to calculate the shortest path using the Google Maps Directions API
-  Future<String> _getDirections(LatLng origin, LatLng destination) async {
-    String googleAPIKey = 'AIzaSyC3AXw-RcPsAR5s9Cgr84chOLDYT575ZM4';
-    String url =
-        'https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}&destination=${destination.latitude},${destination.longitude}&key=$googleAPIKey';
-
-    try {
-      var response = await http.get(Uri.parse(url));
-
-      if (response.statusCode == 200) {
-        var jsonData = json.decode(response.body);
-        if (jsonData['status'] == 'OK') {
-          var route = jsonData['routes'][0]['legs'][0];
-          var steps = route['steps'];
-
-          List<LatLng> polylinePoints = [];
-          for (var step in steps) {
-            polylinePoints.add(LatLng(
-                step['end_location']['lat'], step['end_location']['lng']));
-          }
-
-          // Create a polyline and add it to the map
-          setState(() {
-            _polylines.clear(); // Clear previous routes
-            _polylines.add(Polyline(
-              polylineId: PolylineId('route'),
-              points: polylinePoints,
-              color: Colors.blue,
-              width: 5,
-            ));
-          });
-
-          return route['duration']['text']; // Return the duration of the route
-        } else {
-          return 'Error calculating route: ${jsonData['status']}';
-        }
-      } else {
-        return 'HTTP Error: ${response.statusCode}';
-      }
-    } catch (e) {
-      return 'Error calculating route';
-    }
-  }
-
-  // Show the route dialog with the duration
-  void _showRouteDialog(String toiletName, String duration) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('Route to $toiletName'),
-          content: Text('Estimated time: $duration'),
-          actions: <Widget>[
-            TextButton(
-              child: Text('OK'),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
+  // Bottom navigation
   void _onItemTapped(int index) {
     if (index == 1) {
-      // Example toilet data (replace with actual data from Firestore)
-      Map<String, dynamic> exampleToiletData = {
-        'name': 'Example Toilet',
-        'location': {'latitude': 37.7749, 'longitude': -122.4194},
-        'average_rating': 4.5,
-        'amenities': ['male', 'female', 'accessible'],
-      };
-
-      // Navigate to DetailsPage with toiletId and toiletData
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => FilterPage(
-            onApplyFilter: (selectedRating, selectedAmenities) {
-              setState(() {
-                _selectedRating = selectedRating;
-                _selectedAmenities = selectedAmenities;
-              });
-              _applyFilters();
-            },
-          ),
-        ),
-      );
+      _openFilterPage();
     } else if (index == 2) {
       Navigator.push(
         context,
         MaterialPageRoute(builder: (context) => NotificationPage()),
       );
     } else if (index == 3) {
-      _navigateToProfilePage();
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ProfilePage(role: widget.loggedInUserRole),
+        ),
+      );
     } else {
       setState(() {
         _selectedIndex = index;
@@ -279,23 +633,23 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _navigateToProfilePage() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => ProfilePage(role: widget.loggedInUserRole),
-      ),
-    );
-  }
+// ... [keep all imports and class declarations the same until the build method]
 
+  // REPLACEMENT FOR YOUR ENTIRE BUILD METHOD
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      extendBody: true,
       appBar: AppBar(
-        title: const Text('Home'),
+        title: Text(
+          'Toilet Finder',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        elevation: 0,
+        backgroundColor: Colors.blue,
         actions: [
           IconButton(
-            icon: const Icon(Icons.logout),
+            icon: const Icon(Icons.logout, color: Colors.white),
             onPressed: () async {
               await FirebaseAuth.instance.signOut();
               Navigator.pushReplacement(
@@ -306,210 +660,499 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
-      body: Stack(
-        children: [
-          // ✅ Google Map as the Background
-          GoogleMap(
-            initialCameraPosition: _userLocation != null
-                ? CameraPosition(
-                    target: _userLocation!, // User's location
-                    zoom: 12,
-                  )
-                : CameraPosition(
-                    target:
-                        LatLng(37.7749, -122.4194), // Default (San Francisco)
-                    zoom: 12,
-                  ),
-            markers: _markers,
-            polylines: _polylines, // Display polylines
-            onMapCreated: (controller) {
-              _mapController = controller;
-            },
-            myLocationEnabled: true, // Show user location
-          ),
-          // ✅ View Reviews Section (Draggable Bottom Sheet)
-          DraggableScrollableSheet(
-            initialChildSize: 0.1, // Minimized state (10% of screen height)
-            minChildSize: 0.1, // Minimum size
-            maxChildSize: 0.5, // Expandable up to 50% of screen height
-            builder: (context, scrollController) {
-              return Container(
-                padding: EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.only(
-                    topLeft: Radius.circular(20),
-                    topRight: Radius.circular(20),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black26,
-                      blurRadius: 8,
-                      spreadRadius: 2,
-                    ),
-                  ],
+      body: Builder(
+        builder: (BuildContext context) {
+          return Stack(
+            children: [
+              // Google Map
+              GoogleMap(
+                initialCameraPosition: CameraPosition(
+                  target: _userLocation ?? const LatLng(37.7749, -122.4194),
+                  zoom: 14.0,
                 ),
+                markers: _markers,
+                polylines: _polylines,
+                onMapCreated: (GoogleMapController controller) {
+                  _mapController = controller;
+                  _controller.complete(controller);
+                },
+                myLocationEnabled: true,
+                myLocationButtonEnabled: false,
+                zoomControlsEnabled: false,
+              ),
+
+              // Search bar
+              Positioned(
+                top: 10,
+                left: 20,
+                right: 20,
                 child: Column(
                   children: [
-                    // 🔽 Drag Handle
                     Container(
-                      width: 50,
-                      height: 5,
                       decoration: BoxDecoration(
-                        color: Colors.grey[300],
-                        borderRadius: BorderRadius.circular(10),
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(30),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            spreadRadius: 2,
+                            blurRadius: 5,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: TextField(
+                        controller: _searchController,
+                        onChanged: _searchToilets,
+                        onTap: () {
+                          setState(() {
+                            _showCombinedList = true;
+                          });
+                        },
+                        decoration: InputDecoration(
+                          hintText: 'Search Toilets',
+                          hintStyle: TextStyle(color: Colors.grey[400]),
+                          border: InputBorder.none,
+                          contentPadding: EdgeInsets.symmetric(
+                              vertical: 15, horizontal: 16),
+                          prefixIcon: Icon(Icons.search, color: Colors.blue),
+                          suffixIcon: _searchController.text.isNotEmpty
+                              ? IconButton(
+                                  icon: Icon(Icons.clear, color: Colors.grey),
+                                  onPressed: () {
+                                    setState(() {
+                                      _searchController.clear();
+                                      _searchResults.clear();
+                                      _showCombinedList = false;
+                                      _loadMarkers();
+                                    });
+                                  },
+                                )
+                              : null,
+                        ),
                       ),
                     ),
-                    SizedBox(height: 10),
 
-                    // 📢 Title: Reviews Section
-                    Text(
-                      "Reviews Near Toilets",
-                      style:
-                          TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                    Divider(),
-
-                    // 📝 Reviews List
-                    Expanded(
-                      child: FutureBuilder<QuerySnapshot>(
-                        future: FirebaseFirestore.instance
-                            .collection('reviews')
-                            .get(),
-                        builder: (context, snapshot) {
-                          if (snapshot.connectionState ==
-                              ConnectionState.waiting) {
-                            return Center(child: CircularProgressIndicator());
-                          }
-                          if (!snapshot.hasData ||
-                              snapshot.data!.docs.isEmpty) {
-                            return Center(child: Text("No reviews available."));
-                          }
-
-                          return ListView(
-                            controller: scrollController,
-                            children: snapshot.data!.docs.map((doc) {
-                              var review = doc.data() as Map<String, dynamic>;
-                              return ListTile(
-                                leading: Icon(Icons.star, color: Colors.orange),
-                                title: Text(
-                                    review['toilet_name'] ?? "Unknown Toilet"),
-                                subtitle:
-                                    Text(review['comment'] ?? "No Comment"),
-                                trailing: Text(
-                                  "${review['rating']} ⭐",
-                                  style: TextStyle(fontWeight: FontWeight.bold),
+                    // Combined search results and history dropdown
+                    if (_showCombinedList)
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(15),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.grey.withOpacity(0.5),
+                              spreadRadius: 2,
+                              blurRadius: 5,
+                              offset: Offset(0, 3),
+                            ),
+                          ],
+                        ),
+                        margin: EdgeInsets.only(top: 5),
+                        constraints: BoxConstraints(maxHeight: 200),
+                        child: ListView(
+                          shrinkWrap: true,
+                          children: [
+                            if (_searchResults.isNotEmpty)
+                              Padding(
+                                padding: EdgeInsets.all(8),
+                                child: Text(
+                                  'Search Results',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.blue,
+                                  ),
                                 ),
+                              ),
+                            ..._searchResults.map((doc) {
+                              var data = doc.data() as Map<String, dynamic>;
+                              return ListTile(
+                                leading: CircleAvatar(
+                                  backgroundColor: Colors.blue.withOpacity(0.2),
+                                  child: Icon(Icons.search, color: Colors.blue),
+                                ),
+                                title: Text(data['name'] ?? "Unnamed Toilet"),
+                                onTap: () {
+                                  double lat = data['location']['latitude'];
+                                  double lng = data['location']['longitude'];
+                                  _mapController.animateCamera(
+                                    CameraUpdate.newLatLng(LatLng(lat, lng)),
+                                  );
+                                  setState(() {
+                                    _showCombinedList = false;
+                                    _searchController.text = data['name'] ?? "";
+                                  });
+                                },
                               );
                             }).toList(),
-                          );
-                        },
+                            if (_searchHistory.isNotEmpty)
+                              Padding(
+                                padding: EdgeInsets.all(8),
+                                child: Text(
+                                  'Recent Searches',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.green,
+                                  ),
+                                ),
+                              ),
+                            ..._searchHistory.map((history) {
+                              return ListTile(
+                                leading: CircleAvatar(
+                                  backgroundColor:
+                                      Colors.green.withOpacity(0.2),
+                                  child:
+                                      Icon(Icons.history, color: Colors.green),
+                                ),
+                                title: Text(history['name']),
+                                onTap: () {
+                                  setState(() {
+                                    _searchController.text = history['name'];
+                                    _searchToilets(history['name']);
+                                    _showCombinedList = false;
+                                  });
+                                },
+                              );
+                            }).toList(),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
-
-          // ✅ Positioned Search Button (One-Third Down)
-          Positioned(
-            top: MediaQuery.of(context).size.height / 6, // 1/6 of screen height
-            left: 20,
-            right: 20,
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.lightBlue, // Solid light blue background color
-                borderRadius: BorderRadius.circular(20), // Rounded corners
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    spreadRadius: 2,
-                    blurRadius: 5,
-                    offset: const Offset(0, 3), // Shadow effect
-                  ),
-                ],
-              ),
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 15),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(15),
-                  ),
-                  backgroundColor: Colors
-                      .transparent, // Remove default background color to show light blue
-                  shadowColor:
-                      Colors.transparent, // Remove shadow from button itself
-                ),
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => SearchPage()),
-                  );
-                },
-                child: Row(
-                  children: [
-                    // Search Icon on the Left, with small distance from left
-                    const SizedBox(
-                        width: 10), // Small gap between left and icon
-                    const Icon(Icons.search,
-                        color: Colors.white), // White icon color
-
-                    // Spacer to center the text
-                    const SizedBox(
-                        width: 10), // Space between the icon and the text
-
-                    // Centered Text, also white color
-                    Expanded(
-                      child: Text(
-                        'Search Toilets',
-                        textAlign: TextAlign
-                            .center, // Center the text in the remaining space
-                        style: const TextStyle(
-                            fontSize: 18, color: Colors.white), // White text
-                      ),
-                    ),
                   ],
                 ),
               ),
-            ),
-          ),
-        ],
+
+              // Location button
+              Positioned(
+                right: 20,
+                bottom: 120,
+                child: FloatingActionButton(
+                  heroTag: "locationBtn",
+                  backgroundColor: Colors.white,
+                  onPressed: _getUserLocation,
+                  child: Icon(Icons.my_location, color: Colors.blue),
+                  elevation: 4,
+                ),
+              ),
+
+              // Bottom sheet toggle button
+              Positioned(
+                right: 20,
+                bottom: 190,
+                child: FloatingActionButton(
+                  heroTag: "bottomSheetBtn",
+                  backgroundColor: Colors.white,
+                  onPressed: () {
+                    _showToiletBottomSheet(context);
+                  },
+                  child: Icon(Icons.list, color: Colors.blue),
+                  elevation: 4,
+                ),
+              ),
+            ],
+          );
+        },
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: _onItemTapped,
-        selectedItemColor: Colors.blue,
-        unselectedItemColor: Colors.grey,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(
-              icon: Icon(Icons.filter), label: 'Filter'), // Updated here
-          BottomNavigationBarItem(
-              icon: Icon(Icons.notifications), label: 'Notifications'),
-          BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profile'),
-        ],
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.only(
+            topRight: Radius.circular(25),
+            topLeft: Radius.circular(25),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              spreadRadius: 0,
+              blurRadius: 10,
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.only(
+            topLeft: Radius.circular(25.0),
+            topRight: Radius.circular(25.0),
+          ),
+          child: BottomNavigationBar(
+            currentIndex: _selectedIndex,
+            onTap: _onItemTapped,
+            selectedItemColor: Colors.blue,
+            unselectedItemColor: Colors.grey,
+            selectedLabelStyle: TextStyle(fontWeight: FontWeight.bold),
+            type: BottomNavigationBarType.fixed,
+            backgroundColor: Colors.white,
+            elevation: 8,
+            items: [
+              BottomNavigationBarItem(
+                icon: Icon(Icons.home),
+                label: 'Home',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.filter_alt),
+                label: 'Filter',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.notifications),
+                label: 'Alerts',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.person),
+                label: 'Profile',
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
-}
 
-class ToiletProvider extends ChangeNotifier {
-  List<Map<String, dynamic>> toilets = [];
+// Add this method to your class
+  void _showToiletBottomSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (BuildContext context) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.4,
+          minChildSize: 0.2,
+          maxChildSize: 0.8,
+          expand: false,
+          builder: (context, scrollController) {
+            return Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(20),
+                  topRight: Radius.circular(20),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black26,
+                    blurRadius: 10,
+                    spreadRadius: 0,
+                  ),
+                ],
+              ),
+              child: Column(
+                children: [
+                  // Drag handle
+                  Container(
+                    margin: EdgeInsets.only(top: 10, bottom: 8),
+                    height: 4,
+                    width: 40,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
 
-  Future<void> fetchToilets() async {
-    QuerySnapshot snapshot =
-        await FirebaseFirestore.instance.collection('toilets').get();
+                  // Header
+                  Padding(
+                    padding: EdgeInsets.only(left: 16, right: 16, bottom: 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.star, color: Colors.amber, size: 20),
+                        SizedBox(width: 8),
+                        Text(
+                          "Nearby Toilets",
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue[800],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Divider(height: 1, thickness: 1),
 
-    toilets = snapshot.docs.map((doc) {
-      return {
-        'id': doc.id,
-        'name': doc['name'],
-        'latitude': doc['latitude'],
-        'longitude': doc['longitude'],
-      };
-    }).toList();
+                  // List of toilets
+                  Expanded(
+                    child: FutureBuilder<List<Map<String, dynamic>>>(
+                      future: _getNearbyToiletsWithReviews(),
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return Center(child: CircularProgressIndicator());
+                        }
 
-    notifyListeners();
+                        if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                          return Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.wc, size: 40, color: Colors.grey),
+                                SizedBox(height: 10),
+                                Text(
+                                  "No nearby toilets found",
+                                  style: TextStyle(color: Colors.grey[600]),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+
+                        return ListView.builder(
+                          controller: scrollController,
+                          padding: EdgeInsets.only(bottom: 20),
+                          itemCount: snapshot.data!.length,
+                          itemBuilder: (context, index) {
+                            var toilet = snapshot.data![index];
+                            return Padding(
+                              padding: EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 6),
+                              child: Card(
+                                elevation: 2,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: ListTile(
+                                  contentPadding: EdgeInsets.all(12),
+                                  leading: Container(
+                                    width: 60,
+                                    height: 60,
+                                    decoration: BoxDecoration(
+                                      color: Colors.blue.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: toilet['photoUrl'] != null
+                                        ? ClipRRect(
+                                            borderRadius:
+                                                BorderRadius.circular(8),
+                                            child: Image.network(
+                                              toilet['photoUrl'],
+                                              fit: BoxFit.cover,
+                                            ),
+                                          )
+                                        : Icon(Icons.wc, color: Colors.blue),
+                                  ),
+                                  title: Text(
+                                    toilet['name'] ?? 'Unnamed Toilet',
+                                    style:
+                                        TextStyle(fontWeight: FontWeight.bold),
+                                  ),
+                                  subtitle: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      SizedBox(height: 4),
+                                      Row(
+                                        children: [
+                                          Icon(Icons.star,
+                                              color: Colors.amber, size: 16),
+                                          SizedBox(width: 4),
+                                          Text(
+                                            "${toilet['average_rating']?.toStringAsFixed(1) ?? '0.0'}",
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                          SizedBox(width: 8),
+                                          Text(
+                                            "(${toilet['reviewsCount'] ?? 0} reviews)",
+                                            style: TextStyle(
+                                              color: Colors.grey[600],
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      SizedBox(height: 4),
+                                      Row(
+                                        children: [
+                                          Icon(Icons.location_on,
+                                              color: Colors.green, size: 16),
+                                          SizedBox(width: 4),
+                                          Text(
+                                            "${toilet['distance']?.toStringAsFixed(1) ?? '?'} km away",
+                                            style: TextStyle(
+                                              color: Colors.green,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                  // In the _showToiletBottomSheet method, replace the trailing ElevatedButton with this Row:
+                                  trailing: ConstrainedBox(
+                                    constraints: BoxConstraints(
+                                        maxWidth:
+                                            120), // Adjust this value as needed
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        // Add Comment Button
+                                        ElevatedButton(
+                                          onPressed: () {
+                                            Navigator.pop(context);
+                                            Navigator.push(
+                                              context,
+                                              MaterialPageRoute(
+                                                builder: (context) =>
+                                                    AddCommentPage(
+                                                  toiletId: toilet['id'],
+                                                  toiletName: toilet['name'],
+                                                ),
+                                              ),
+                                            );
+                                          },
+                                          style: ElevatedButton.styleFrom(
+                                            foregroundColor: Colors.white,
+                                            backgroundColor: Colors.green,
+                                            padding: EdgeInsets.symmetric(
+                                                horizontal: 8, vertical: 6),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(20),
+                                            ),
+                                            minimumSize: Size(0, 30),
+                                            tapTargetSize: MaterialTapTargetSize
+                                                .shrinkWrap,
+                                          ),
+                                          child:
+                                              Icon(Icons.add_comment, size: 18),
+                                        ),
+                                        SizedBox(width: 4), // Reduced spacing
+                                        // Details Button
+                                        ElevatedButton(
+                                          onPressed: () {
+                                            Navigator.pop(context);
+                                            _showToiletDetails(toilet);
+                                          },
+                                          style: ElevatedButton.styleFrom(
+                                            foregroundColor: Colors.white,
+                                            backgroundColor: Colors.blue,
+                                            padding: EdgeInsets.symmetric(
+                                                horizontal: 8, vertical: 6),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(20),
+                                            ),
+                                            minimumSize: Size(0, 30),
+                                            tapTargetSize: MaterialTapTargetSize
+                                                .shrinkWrap,
+                                          ),
+                                          child: Text("Details",
+                                              style: TextStyle(fontSize: 12)),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 }
