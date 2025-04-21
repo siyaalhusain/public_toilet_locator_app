@@ -40,7 +40,7 @@ class _FilterPageState extends State<FilterPage> {
 
   void applyFilters() {
     widget.onApplyFilter(selectedRating, selectedAmenities.toList());
-    Navigator.pop(context);
+    Navigator.pop(context); // Goes back to Home page
   }
 
   void _clearFilters() {
@@ -49,6 +49,10 @@ class _FilterPageState extends State<FilterPage> {
       selectedAmenities.clear();
       hasChanges = true;
     });
+
+    // Apply cleared filters and go to Home page
+    widget.onApplyFilter(selectedRating, selectedAmenities.toList());
+    Navigator.pop(context); // Goes back to Home page
   }
 
   void _updateHasChanges() {

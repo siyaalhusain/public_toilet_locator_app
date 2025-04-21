@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:project_x/screen/ManageUser.dart';
+import 'package:project_x/screen/update_maintanance_status.dart';
+import 'package:project_x/screen/user_counting_page.dart';
 
 import 'AddCommentPage.dart';
 import 'AddMaintainerPage.dart';
@@ -9,7 +11,9 @@ import 'ManageMaintainersPage.dart';
 import 'ManageToiletsPage.dart';
 import 'ReportIssuePage.dart';
 import 'ViewReportsPage.dart';
+import 'contact_us_page.dart';
 import 'view_reviews_page.dart';
+import 'admin_payment_verification_screen.dart'; // Import the payment verification screen
 
 class ProfilePage extends StatelessWidget {
   final String role;
@@ -295,15 +299,49 @@ class ProfilePage extends StatelessWidget {
                     ),
                     const SizedBox(width: 16),
                     Expanded(
-                      child: Text(
-                        action.title,
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: roleConfig.textColor,
-                        ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            action.title,
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              color: roleConfig.textColor,
+                            ),
+                          ),
+                          if (action.subtitle != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                action.subtitle!,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[600],
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ),
+                    if (action.badge != null)
+                      Container(
+                        margin: EdgeInsets.only(right: 12),
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.red,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          action.badge!,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
                     Icon(
                       Icons.chevron_right_rounded,
                       color: roleConfig.primaryColor,
@@ -325,14 +363,16 @@ class ProfilePage extends StatelessWidget {
       case 'Admin':
         return [
           RoleAction(
+            title: 'Verify Payments',
+            subtitle: 'Approve or reject payment receipts',
+            icon: Icons.payment_rounded,
+            page: AdminPaymentVerificationScreen(),
+            badge: '4', // This could be dynamic based on pending payments count
+          ),
+          RoleAction(
             title: 'Manage Users',
             icon: Icons.people_rounded,
             page: ManageUsersPage(),
-          ),
-          RoleAction(
-            title: 'View Reports',
-            icon: Icons.report_rounded,
-            page: ViewReportsPage(),
           ),
         ];
       case 'Owner':
@@ -357,6 +397,16 @@ class ProfilePage extends StatelessWidget {
             icon: Icons.manage_accounts_rounded,
             page: ImprovedManageMaintainersPage(), // Updated class name
           ),
+          RoleAction(
+            title: 'View Reports',
+            icon: Icons.report_rounded,
+            page: ViewReportsPage(),
+          ),
+          RoleAction(
+            title: 'Contact Us',
+            icon: Icons.contact_support_rounded,
+            page: ContactUsPage(),
+          ),
         ];
       case 'User':
         return [
@@ -375,18 +425,28 @@ class ProfilePage extends StatelessWidget {
             icon: Icons.report_problem_rounded,
             page: ReportIssuePage(),
           ),
+          RoleAction(
+            title: 'Contact Us',
+            icon: Icons.contact_support_rounded,
+            page: ContactUsPage(),
+          ),
         ];
       case 'Maintainer':
         return [
           RoleAction(
-            title: 'View Assigned Tasks',
-            icon: Icons.task_rounded,
-            page: null,
+            title: 'Toilet User Counting',
+            icon: Icons.numbers_rounded,
+            page: ToiletUserCountingPage(
+              toiletId: 'TOILET001', // Replace with actual toilet ID
+              maintainerId:
+                  'MAINTAINER001', // Replace with actual maintainer ID
+            ),
           ),
           RoleAction(
             title: 'Update Maintenance Status',
             icon: Icons.construction_rounded,
-            page: null,
+            page:
+                UpdateMaintenanceStatusPage(), // Point to our implemented page
           ),
         ];
       default:
@@ -415,12 +475,16 @@ class RoleConfig {
 // Role Action Class
 class RoleAction {
   final String title;
+  final String? subtitle;
   final IconData icon;
   final Widget? page;
+  final String? badge;
 
   const RoleAction({
     required this.title,
+    this.subtitle,
     required this.icon,
     this.page,
+    this.badge,
   });
 }

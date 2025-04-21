@@ -4,9 +4,12 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:ui';
 import 'home_page.dart';
 import 'sign_up.dart';
+import 'package:flutter_easyloading/flutter_easyloading.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  final String? errorMessage;
+
+  const LoginScreen({super.key, this.errorMessage});
 
   @override
   _LoginScreenState createState() => _LoginScreenState();
@@ -15,10 +18,12 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen>
     with SingleTickerProviderStateMixin {
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
+  String? _loginError;
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
 
@@ -38,6 +43,11 @@ class _LoginScreenState extends State<LoginScreen>
     );
 
     _animationController.forward();
+
+    // Set error message if provided
+    if (widget.errorMessage != null) {
+      _loginError = widget.errorMessage;
+    }
   }
 
   @override
@@ -48,73 +58,171 @@ class _LoginScreenState extends State<LoginScreen>
     super.dispose();
   }
 
+  Future<bool> _verifyAccountStatus(UserCredential userCredential) async {
+    // Check if user exists
+    if (userCredential.user != null) {
+      String userId = userCredential.user!.uid;
+
+      // Fetch user data from Firestore
+      DocumentSnapshot userDoc =
+          await _firestore.collection('users').doc(userId).get();
+
+      if (userDoc.exists) {
+        Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
+
+        // Check if user is an Owner and verify account status
+        if (userData['role'] == 'Owner') {
+          // Check if account is active
+          bool isActive = userData['isAccountActive'] ?? false;
+          String paymentStatus = '';
+
+          if (userData.containsKey('subscription') &&
+              userData['subscription'] is Map<String, dynamic>) {
+            Map<String, dynamic> subscription =
+                userData['subscription'] as Map<String, dynamic>;
+            paymentStatus = subscription['paymentStatus'] ?? '';
+          }
+
+          // If account is inactive or payment was rejected, prevent login
+          if (!isActive || paymentStatus == 'rejected') {
+            // Sign out the user since we don't want them to proceed
+            await _auth.signOut();
+
+            setState(() {
+              if (paymentStatus == 'rejected') {
+                _loginError =
+                    "Your payment was rejected. Please contact admin for assistance.";
+              } else if (paymentStatus == 'pending') {
+                _loginError =
+                    "Your account is awaiting payment verification. Please wait for approval.";
+              } else {
+                _loginError =
+                    "Your account is not active. Please contact support.";
+              }
+            });
+            return false;
+          }
+
+          // Check if subscription has expired
+          if (userData.containsKey('subscription') &&
+              userData['subscription'] is Map<String, dynamic>) {
+            Map<String, dynamic> subscription =
+                userData['subscription'] as Map<String, dynamic>;
+
+            if (subscription.containsKey('endDate') &&
+                subscription['endDate'] != null) {
+              Timestamp endTimestamp = subscription['endDate'];
+              DateTime endDate = endTimestamp.toDate();
+
+              if (DateTime.now().isAfter(endDate)) {
+                // Subscription has expired
+                await _firestore.collection('users').doc(userId).update({
+                  'isAccountActive': false,
+                  'subscription.status': 'expired'
+                });
+
+                // Sign out the user
+                await _auth.signOut();
+
+                setState(() {
+                  _loginError =
+                      "Your subscription has expired. Please renew to continue.";
+                });
+                return false;
+              }
+            }
+          }
+        }
+
+        // For all other users, or approved owners, allow login
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   void _login() async {
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
 
     if (email.isEmpty || password.isEmpty) {
-      _showSnackBar("Please fill all fields.");
+      setState(() {
+        _loginError = "Please fill all fields.";
+      });
       return;
     }
 
     setState(() {
       _isLoading = true;
+      _loginError = null;
     });
 
     try {
-      // Log in with email and password
+      EasyLoading.show(status: 'Signing in...');
+
       final UserCredential userCredential =
           await _auth.signInWithEmailAndPassword(
         email: email,
         password: password,
       );
 
-      // Fetch the user role from Firestore
-      final uid = userCredential.user?.uid;
-      if (uid != null) {
-        final userDoc =
-            await FirebaseFirestore.instance.collection('users').doc(uid).get();
+      // Verify account status
+      bool isAccountValid = await _verifyAccountStatus(userCredential);
 
-        if (userDoc.exists) {
-          final userData = userDoc.data();
-          final role = userData?['role'] ??
-              'user'; // Default role is 'user' if not specified
+      EasyLoading.dismiss();
 
-          // Navigate to the HomePage and pass the role
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => HomePage(loggedInUserRole: role),
-            ),
-          );
-        } else {
-          _showSnackBar("User data not found.");
+      if (isAccountValid) {
+        final uid = userCredential.user?.uid;
+        if (uid != null) {
+          final userDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(uid)
+              .get();
+
+          if (userDoc.exists) {
+            final userData = userDoc.data();
+            final role = userData?['role'] ?? 'user';
+
+            // Navigate to HomePage with role
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => HomePage(loggedInUserRole: role),
+              ),
+            );
+          } else {
+            setState(() {
+              _isLoading = false;
+              _loginError = "User data not found.";
+            });
+          }
         }
+      } else {
+        // _loginError is set in _verifyAccountStatus method
+        setState(() {
+          _isLoading = false;
+        });
       }
     } on FirebaseAuthException catch (e) {
+      EasyLoading.dismiss();
       String message = "An error occurred. Please try again.";
       if (e.code == 'user-not-found') {
         message = "No user found for this email.";
       } else if (e.code == 'wrong-password') {
         message = "Incorrect password.";
       }
-      _showSnackBar(message);
-    } finally {
       setState(() {
         _isLoading = false;
+        _loginError = message;
+      });
+    } catch (e) {
+      EasyLoading.dismiss();
+      setState(() {
+        _isLoading = false;
+        _loginError = "An unexpected error occurred. Please try again.";
       });
     }
-  }
-
-  void _showSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        backgroundColor: Color(0xFF2E86DE),
-      ),
-    );
   }
 
   @override
@@ -122,7 +230,6 @@ class _LoginScreenState extends State<LoginScreen>
     return Scaffold(
       body: Stack(
         children: [
-          // Background image with blur effect
           Positioned.fill(
             child: ShaderMask(
               shaderCallback: (rect) {
@@ -154,8 +261,6 @@ class _LoginScreenState extends State<LoginScreen>
               ),
             ),
           ),
-
-          // Gradient overlay
           Container(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -170,11 +275,8 @@ class _LoginScreenState extends State<LoginScreen>
               ),
             ),
           ),
-
-          // Content with improved top safe area
           Column(
             children: [
-              // Extra space for top safe area on notched devices
               SizedBox(height: MediaQuery.of(context).padding.top),
               Expanded(
                 child: Center(
@@ -188,7 +290,6 @@ class _LoginScreenState extends State<LoginScreen>
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            // App logo
                             Container(
                               height: 80,
                               width: 80,
@@ -210,8 +311,6 @@ class _LoginScreenState extends State<LoginScreen>
                               ),
                             ),
                             const SizedBox(height: 16),
-
-                            // App name
                             Text(
                               "Toilet Finder",
                               style: TextStyle(
@@ -221,8 +320,6 @@ class _LoginScreenState extends State<LoginScreen>
                               ),
                             ),
                             const SizedBox(height: 6),
-
-                            // App tagline
                             Text(
                               "Find clean restrooms nearby",
                               style: TextStyle(
@@ -232,7 +329,36 @@ class _LoginScreenState extends State<LoginScreen>
                             ),
                             const SizedBox(height: 40),
 
-                            // Login form container
+                            // Login error message
+                            if (_loginError != null) ...[
+                              Container(
+                                padding: EdgeInsets.all(16),
+                                decoration: BoxDecoration(
+                                  color: Colors.red.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                      color: Colors.red.withOpacity(0.3)),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.error_outline,
+                                        color: Colors.red),
+                                    SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        _loginError!,
+                                        style: TextStyle(
+                                          color: Colors.red,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 20),
+                            ],
+
                             Container(
                               padding: EdgeInsets.all(24),
                               decoration: BoxDecoration(
@@ -249,7 +375,6 @@ class _LoginScreenState extends State<LoginScreen>
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  // Welcome text
                                   Text(
                                     "Welcome Back",
                                     style: TextStyle(
@@ -267,8 +392,6 @@ class _LoginScreenState extends State<LoginScreen>
                                     ),
                                   ),
                                   const SizedBox(height: 24),
-
-                                  // Email TextField
                                   _buildTextField(
                                     controller: _emailController,
                                     label: "Email Address",
@@ -276,8 +399,6 @@ class _LoginScreenState extends State<LoginScreen>
                                     keyboardType: TextInputType.emailAddress,
                                   ),
                                   const SizedBox(height: 20),
-
-                                  // Password TextField
                                   _buildTextField(
                                     controller: _passwordController,
                                     label: "Password",
@@ -291,13 +412,11 @@ class _LoginScreenState extends State<LoginScreen>
                                     },
                                   ),
                                   const SizedBox(height: 12),
-
-                                  // Forgot password
                                   Align(
                                     alignment: Alignment.centerRight,
                                     child: TextButton(
                                       onPressed: () {
-                                        // Handle password reset functionality
+                                        // Handle password reset
                                       },
                                       style: TextButton.styleFrom(
                                         foregroundColor: Color(0xFF2E86DE),
@@ -314,8 +433,6 @@ class _LoginScreenState extends State<LoginScreen>
                                     ),
                                   ),
                                   const SizedBox(height: 32),
-
-                                  // Login button
                                   SizedBox(
                                     width: double.infinity,
                                     height: 56,
@@ -357,8 +474,6 @@ class _LoginScreenState extends State<LoginScreen>
                               ),
                             ),
                             const SizedBox(height: 24),
-
-                            // Social login section
                             Column(
                               children: [
                                 Text(
@@ -370,8 +485,6 @@ class _LoginScreenState extends State<LoginScreen>
                                   ),
                                 ),
                                 const SizedBox(height: 16),
-
-                                // Social login buttons
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
@@ -379,35 +492,27 @@ class _LoginScreenState extends State<LoginScreen>
                                       icon: Icons.g_mobiledata,
                                       color: Colors.white,
                                       backgroundColor: Colors.red,
-                                      onPressed: () {
-                                        // Google sign-in integration
-                                      },
+                                      onPressed: () {},
                                     ),
                                     const SizedBox(width: 16),
                                     _buildSocialButton(
                                       icon: Icons.apple,
                                       color: Colors.white,
                                       backgroundColor: Colors.black,
-                                      onPressed: () {
-                                        // Apple sign-in integration
-                                      },
+                                      onPressed: () {},
                                     ),
                                     const SizedBox(width: 16),
                                     _buildSocialButton(
                                       icon: Icons.facebook,
                                       color: Colors.white,
                                       backgroundColor: Colors.blue[800]!,
-                                      onPressed: () {
-                                        // Facebook sign-in integration
-                                      },
+                                      onPressed: () {},
                                     ),
                                   ],
                                 ),
                               ],
                             ),
                             const SizedBox(height: 24),
-
-                            // Register link
                             Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
