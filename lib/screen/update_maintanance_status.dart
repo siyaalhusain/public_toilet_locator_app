@@ -622,13 +622,7 @@ class _UpdateMaintenanceStatusPageState
   late TabController _tabController;
 
   // Tabs for the page
-  final List<String> _tabs = [
-    'Status',
-    'Facilities',
-    'Hours',
-    'Features',
-    'Photos'
-  ];
+  final List<String> _tabs = ['Status', 'Features', 'Photos'];
 
   // For maintainer role color theme
   final Color _primaryColor = Color(0xFFF57C00); // Deep Orange
@@ -1134,8 +1128,6 @@ class _UpdateMaintenanceStatusPageState
             controller: _tabController,
             children: [
               _buildOverallStatusSection(), // Status tab
-              _buildFacilitiesSection(), // Facilities tab
-              _buildOperatingHoursSection(), // Hours tab
               _buildFeaturesSection(), // Features tab
               _buildPhotoDocumentationSection(), // Photos tab
             ],
@@ -1394,6 +1386,177 @@ class _UpdateMaintenanceStatusPageState
 
           SizedBox(height: 20),
 
+          // Operating Hours Section
+          Container(
+            padding: EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 3,
+                  offset: Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Operating Hours',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.grey[800],
+                  ),
+                ),
+                SizedBox(height: 12),
+
+                // 24 hours toggle
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '24-Hour Operation',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    Switch(
+                      value: _toilet!.is24Hours,
+                      onChanged: (value) {
+                        setState(() {
+                          final updatedToilet = PublicToilet(
+                            id: _toilet!.id,
+                            name: _toilet!.name,
+                            address: _toilet!.address,
+                            latitude: _toilet!.latitude,
+                            longitude: _toilet!.longitude,
+                            status: _toilet!.status,
+                            lastMaintenanceDate: _toilet!.lastMaintenanceDate,
+                            facilities: _toilet!.facilities,
+                            maintenanceNotes: _toilet!.maintenanceNotes,
+                            imageUrls: _toilet!.imageUrls,
+                            isAssigned: _toilet!.isAssigned,
+                            ownerId: _toilet!.ownerId,
+                            ownerEmail: _toilet!.ownerEmail,
+                            openingTime: _toilet!.openingTime,
+                            closingTime: _toilet!.closingTime,
+                            is24Hours: value,
+                            operatingDays: _toilet!.operatingDays,
+                            features: _toilet!.features,
+                          );
+                          _toilet = updatedToilet;
+                        });
+                      },
+                      activeColor: _primaryColor,
+                    ),
+                  ],
+                ),
+
+                // Opening Hours (only if not 24 hours)
+                if (!_toilet!.is24Hours) ...[
+                  SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: InkWell(
+                          onTap: () => _selectTimeOfDay(true),
+                          child: InputDecorator(
+                            decoration: InputDecoration(
+                              labelText: 'Opening Time',
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              prefixIcon: Icon(Icons.access_time),
+                            ),
+                            child: Text(_formatTimeOfDay(_toilet!.openingTime)),
+                          ),
+                        ),
+                      ),
+                      SizedBox(width: 16),
+                      Expanded(
+                        child: InkWell(
+                          onTap: () => _selectTimeOfDay(false),
+                          child: InputDecorator(
+                            decoration: InputDecoration(
+                              labelText: 'Closing Time',
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              prefixIcon: Icon(Icons.access_time),
+                            ),
+                            child: Text(_formatTimeOfDay(_toilet!.closingTime)),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+
+                // Operating Days Section
+                SizedBox(height: 16),
+                Text(
+                  'Operating Days',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: List.generate(7, (index) {
+                    return FilterChip(
+                      label: Text(_getDayName(index).substring(0, 3)),
+                      selected: _toilet!.operatingDays[index],
+                      onSelected: (selected) {
+                        setState(() {
+                          final newOperatingDays =
+                              List<bool>.from(_toilet!.operatingDays);
+                          newOperatingDays[index] = selected;
+
+                          final updatedToilet = PublicToilet(
+                            id: _toilet!.id,
+                            name: _toilet!.name,
+                            address: _toilet!.address,
+                            latitude: _toilet!.latitude,
+                            longitude: _toilet!.longitude,
+                            status: _toilet!.status,
+                            lastMaintenanceDate: _toilet!.lastMaintenanceDate,
+                            facilities: _toilet!.facilities,
+                            maintenanceNotes: _toilet!.maintenanceNotes,
+                            imageUrls: _toilet!.imageUrls,
+                            isAssigned: _toilet!.isAssigned,
+                            ownerId: _toilet!.ownerId,
+                            ownerEmail: _toilet!.ownerEmail,
+                            openingTime: _toilet!.openingTime,
+                            closingTime: _toilet!.closingTime,
+                            is24Hours: _toilet!.is24Hours,
+                            operatingDays: newOperatingDays,
+                            features: _toilet!.features,
+                          );
+                          _toilet = updatedToilet;
+                        });
+                      },
+                      selectedColor: _primaryColor,
+                      checkmarkColor: Colors.white,
+                      labelStyle: TextStyle(
+                        color: _toilet!.operatingDays[index]
+                            ? Colors.white
+                            : Colors.black87,
+                      ),
+                    );
+                  }),
+                ),
+              ],
+            ),
+          ),
+
+          SizedBox(height: 20),
+
           // Maintenance Notes
           Text(
             'Maintenance Notes',
@@ -1558,675 +1721,6 @@ class _UpdateMaintenanceStatusPageState
         ),
       ),
     );
-  }
-
-  Widget _buildFacilitiesSection() {
-    if (_toilet == null) return Container();
-
-    return SingleChildScrollView(
-      padding: EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Facilities Status',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: Colors.grey[800],
-            ),
-          ),
-          SizedBox(height: 16),
-
-          // Facilities list
-          ..._toilet!.facilities
-              .map((facility) => _buildFacilityItem(facility))
-              .toList(),
-
-          // Add facility button
-          Padding(
-            padding: EdgeInsets.symmetric(vertical: 16),
-            child: OutlinedButton.icon(
-              onPressed: _showAddFacilityDialog,
-              icon: Icon(Icons.add),
-              label: Text('Add Facility'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: _primaryColor,
-                side: BorderSide(color: _primaryColor),
-                padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFacilityItem(ToiletFacility facility) {
-    return Card(
-      margin: EdgeInsets.only(bottom: 12),
-      elevation: 1,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: BorderSide(
-          color: facility.isOperational ? Colors.green[100]! : Colors.red[100]!,
-        ),
-      ),
-      child: Padding(
-        padding: EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                // Facility name
-                Expanded(
-                  child: Text(
-                    facility.name,
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
-                ),
-
-                // Operational toggle
-                Switch(
-                  value: facility.isOperational,
-                  onChanged: (value) {
-                    setState(() {
-                      // Update the facility status
-                      final index = _toilet!.facilities.indexOf(facility);
-                      if (index >= 0) {
-                        _toilet!.facilities[index] = ToiletFacility(
-                          id: facility.id,
-                          name: facility.name,
-                          isOperational: value,
-                          statusDetails: facility.statusDetails,
-                          notes: facility.notes,
-                          lastUpdated: DateTime.now(),
-                        );
-
-                        // Update overall toilet status
-                        _toilet!.updateStatusBasedOnFacilities();
-                      }
-                    });
-                  },
-                  activeColor: Colors.green,
-                  activeTrackColor: Colors.green[100],
-                ),
-              ],
-            ),
-
-            SizedBox(height: 8),
-
-            // Operational status
-            Row(
-              children: [
-                Icon(
-                  facility.isOperational ? Icons.check_circle : Icons.error,
-                  color: facility.isOperational ? Colors.green : Colors.red,
-                  size: 16,
-                ),
-                SizedBox(width: 6),
-                Text(
-                  facility.isOperational ? 'Operational' : 'Not Operational',
-                  style: TextStyle(
-                    color: facility.isOperational ? Colors.green : Colors.red,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-
-            // Status details if any
-            if (facility.statusDetails != null &&
-                facility.statusDetails!.isNotEmpty)
-              Padding(
-                padding: EdgeInsets.only(top: 8),
-                child: Row(
-                  children: [
-                    Icon(Icons.info_outline, size: 16, color: Colors.grey[600]),
-                    SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        facility.statusDetails!,
-                        style: TextStyle(
-                          color: Colors.grey[600],
-                          fontStyle: FontStyle.italic,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-            SizedBox(height: 8),
-
-            // Last updated date
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                Text(
-                  'Last updated: ${DateFormat('MMM d, yyyy').format(facility.lastUpdated)}',
-                  style: TextStyle(
-                    color: Colors.grey[500],
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-            ),
-
-            // Edit and delete buttons
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton.icon(
-                  onPressed: () => _showEditFacilityDialog(facility),
-                  icon: Icon(Icons.edit, size: 16),
-                  label: Text('Edit'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: Colors.blue,
-                    padding: EdgeInsets.symmetric(horizontal: 8),
-                  ),
-                ),
-                TextButton.icon(
-                  onPressed: () => _showDeleteFacilityConfirmation(facility),
-                  icon: Icon(Icons.delete, size: 16),
-                  label: Text('Delete'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: Colors.red,
-                    padding: EdgeInsets.symmetric(horizontal: 8),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showAddFacilityDialog() {
-    final nameController = TextEditingController();
-    final detailsController = TextEditingController();
-    bool isOperational = true;
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Add New Facility'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: InputDecoration(
-                  labelText: 'Facility Name',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              SizedBox(height: 16),
-              StatefulBuilder(
-                builder: (context, setState) => Row(
-                  children: [
-                    Text('Operational: '),
-                    Switch(
-                      value: isOperational,
-                      onChanged: (value) {
-                        setState(() {
-                          isOperational = value;
-                        });
-                      },
-                      activeColor: Colors.green,
-                    ),
-                  ],
-                ),
-              ),
-              SizedBox(height: 16),
-              TextField(
-                controller: detailsController,
-                decoration: InputDecoration(
-                  labelText: 'Status Details (optional)',
-                  border: OutlineInputBorder(),
-                ),
-                maxLines: 2,
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              // Validate
-              if (nameController.text.trim().isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Facility name is required')),
-                );
-                return;
-              }
-
-              // Add the new facility
-              setState(() {
-                if (_toilet != null) {
-                  _toilet!.facilities.add(
-                    ToiletFacility(
-                      id: 'facility-${DateTime.now().millisecondsSinceEpoch}',
-                      name: nameController.text.trim(),
-                      isOperational: isOperational,
-                      statusDetails: detailsController.text.trim().isNotEmpty
-                          ? detailsController.text.trim()
-                          : null,
-                      lastUpdated: DateTime.now(),
-                    ),
-                  );
-
-                  // Update overall toilet status
-                  _toilet!.updateStatusBasedOnFacilities();
-                }
-              });
-
-              Navigator.pop(context);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: _primaryColor),
-            child: Text('Add'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showEditFacilityDialog(ToiletFacility facility) {
-    final nameController = TextEditingController(text: facility.name);
-    final detailsController =
-        TextEditingController(text: facility.statusDetails ?? '');
-    bool isOperational = facility.isOperational;
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Edit Facility'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: InputDecoration(
-                  labelText: 'Facility Name',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              SizedBox(height: 16),
-              StatefulBuilder(
-                builder: (context, setState) => Row(
-                  children: [
-                    Text('Operational: '),
-                    Switch(
-                      value: isOperational,
-                      onChanged: (value) {
-                        setState(() {
-                          isOperational = value;
-                        });
-                      },
-                      activeColor: Colors.green,
-                    ),
-                  ],
-                ),
-              ),
-              SizedBox(height: 16),
-              TextField(
-                controller: detailsController,
-                decoration: InputDecoration(
-                  labelText: 'Status Details (optional)',
-                  border: OutlineInputBorder(),
-                ),
-                maxLines: 2,
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              // Validate
-              if (nameController.text.trim().isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Facility name is required')),
-                );
-                return;
-              }
-
-              // Update the facility
-              setState(() {
-                if (_toilet != null) {
-                  final index = _toilet!.facilities.indexOf(facility);
-                  if (index >= 0) {
-                    _toilet!.facilities[index] = ToiletFacility(
-                      id: facility.id,
-                      name: nameController.text.trim(),
-                      isOperational: isOperational,
-                      statusDetails: detailsController.text.trim().isNotEmpty
-                          ? detailsController.text.trim()
-                          : null,
-                      notes: facility.notes,
-                      lastUpdated: DateTime.now(),
-                    );
-
-                    // Update overall toilet status
-                    _toilet!.updateStatusBasedOnFacilities();
-                  }
-                }
-              });
-
-              Navigator.pop(context);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: _primaryColor),
-            child: Text('Save'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showDeleteFacilityConfirmation(ToiletFacility facility) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Delete Facility?'),
-        content: Text(
-            'Are you sure you want to delete "${facility.name}"? This action cannot be undone.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              setState(() {
-                if (_toilet != null) {
-                  _toilet!.facilities.removeWhere((f) => f.id == facility.id);
-
-                  // Update overall toilet status
-                  _toilet!.updateStatusBasedOnFacilities();
-                }
-              });
-
-              Navigator.pop(context);
-
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Facility "${facility.name}" deleted'),
-                  backgroundColor: Colors.red,
-                ),
-              );
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            child: Text('Delete'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildOperatingHoursSection() {
-    if (_toilet == null) return Container();
-
-    return SingleChildScrollView(
-      padding: EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Operating Hours',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: Colors.grey[800],
-            ),
-          ),
-          SizedBox(height: 16),
-
-          // 24 hours toggle
-          Card(
-            margin: EdgeInsets.only(bottom: 16),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Padding(
-              padding: EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '24-Hour Operation',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                        SizedBox(height: 4),
-                        Text(
-                          'Toggle if this toilet is open 24 hours a day',
-                          style: TextStyle(
-                            color: Colors.grey[600],
-                            fontSize: 14,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Switch(
-                    value: _toilet!.is24Hours,
-                    onChanged: (value) {
-                      setState(() {
-                        final updatedToilet = PublicToilet(
-                          id: _toilet!.id,
-                          name: _toilet!.name,
-                          address: _toilet!.address,
-                          latitude: _toilet!.latitude,
-                          longitude: _toilet!.longitude,
-                          status: _toilet!.status,
-                          lastMaintenanceDate: _toilet!.lastMaintenanceDate,
-                          facilities: _toilet!.facilities,
-                          maintenanceNotes: _toilet!.maintenanceNotes,
-                          imageUrls: _toilet!.imageUrls,
-                          isAssigned: _toilet!.isAssigned,
-                          ownerId: _toilet!.ownerId,
-                          ownerEmail: _toilet!.ownerEmail,
-                          openingTime: _toilet!.openingTime,
-                          closingTime: _toilet!.closingTime,
-                          is24Hours: value,
-                          operatingDays: _toilet!.operatingDays,
-                          features: _toilet!.features,
-                        );
-                        _toilet = updatedToilet;
-                      });
-                    },
-                    activeColor: _primaryColor,
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // Opening Hours (only if not 24 hours)
-          if (!_toilet!.is24Hours)
-            Card(
-              margin: EdgeInsets.only(bottom: 16),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Padding(
-                padding: EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Opening Hours',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                    SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: InkWell(
-                            onTap: () => _selectTimeOfDay(true),
-                            child: InputDecorator(
-                              decoration: InputDecoration(
-                                labelText: 'Opening Time',
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                prefixIcon: Icon(Icons.access_time),
-                              ),
-                              child:
-                                  Text(_formatTimeOfDay(_toilet!.openingTime)),
-                            ),
-                          ),
-                        ),
-                        SizedBox(width: 16),
-                        Expanded(
-                          child: InkWell(
-                            onTap: () => _selectTimeOfDay(false),
-                            child: InputDecorator(
-                              decoration: InputDecoration(
-                                labelText: 'Closing Time',
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                prefixIcon: Icon(Icons.access_time),
-                              ),
-                              child:
-                                  Text(_formatTimeOfDay(_toilet!.closingTime)),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-          // Operating Days Section
-          Card(
-            margin: EdgeInsets.only(bottom: 16),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Padding(
-              padding: EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Operating Days',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
-                  SizedBox(height: 12),
-                  ...List.generate(7, (index) {
-                    return CheckboxListTile(
-                      title: Text(_getDayName(index)),
-                      value: _toilet!.operatingDays.length > index
-                          ? _toilet!.operatingDays[index]
-                          : true,
-                      onChanged: (value) {
-                        setState(() {
-                          final newOperatingDays =
-                              List<bool>.from(_toilet!.operatingDays);
-                          if (newOperatingDays.length <= index) {
-                            newOperatingDays.addAll(List.filled(
-                                index + 1 - newOperatingDays.length, true));
-                          }
-                          newOperatingDays[index] = value!;
-
-                          final updatedToilet = PublicToilet(
-                            id: _toilet!.id,
-                            name: _toilet!.name,
-                            address: _toilet!.address,
-                            latitude: _toilet!.latitude,
-                            longitude: _toilet!.longitude,
-                            status: _toilet!.status,
-                            lastMaintenanceDate: _toilet!.lastMaintenanceDate,
-                            facilities: _toilet!.facilities,
-                            maintenanceNotes: _toilet!.maintenanceNotes,
-                            imageUrls: _toilet!.imageUrls,
-                            isAssigned: _toilet!.isAssigned,
-                            ownerId: _toilet!.ownerId,
-                            ownerEmail: _toilet!.ownerEmail,
-                            openingTime: _toilet!.openingTime,
-                            closingTime: _toilet!.closingTime,
-                            is24Hours: _toilet!.is24Hours,
-                            operatingDays: newOperatingDays,
-                            features: _toilet!.features,
-                          );
-                          _toilet = updatedToilet;
-                        });
-                      },
-                      activeColor: _primaryColor,
-                      dense: true,
-                      controlAffinity: ListTileControlAffinity.trailing,
-                    );
-                  }),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _selectTimeOfDay(bool isOpeningTime) async {
-    final TimeOfDay? selectedTime = await showTimePicker(
-      context: context,
-      initialTime: isOpeningTime ? _toilet!.openingTime : _toilet!.closingTime,
-    );
-
-    if (selectedTime != null) {
-      setState(() {
-        final updatedToilet = PublicToilet(
-          id: _toilet!.id,
-          name: _toilet!.name,
-          address: _toilet!.address,
-          latitude: _toilet!.latitude,
-          longitude: _toilet!.longitude,
-          status: _toilet!.status,
-          lastMaintenanceDate: _toilet!.lastMaintenanceDate,
-          facilities: _toilet!.facilities,
-          maintenanceNotes: _toilet!.maintenanceNotes,
-          imageUrls: _toilet!.imageUrls,
-          isAssigned: _toilet!.isAssigned,
-          ownerId: _toilet!.ownerId,
-          ownerEmail: _toilet!.ownerEmail,
-          openingTime: isOpeningTime ? selectedTime : _toilet!.openingTime,
-          closingTime: isOpeningTime ? _toilet!.closingTime : selectedTime,
-          is24Hours: _toilet!.is24Hours,
-          operatingDays: _toilet!.operatingDays,
-          features: _toilet!.features,
-        );
-        _toilet = updatedToilet;
-      });
-    }
   }
 
   Widget _buildFeaturesSection() {
@@ -2573,6 +2067,39 @@ class _UpdateMaintenanceStatusPageState
         ],
       ),
     );
+  }
+
+  Future<void> _selectTimeOfDay(bool isOpeningTime) async {
+    final TimeOfDay? selectedTime = await showTimePicker(
+      context: context,
+      initialTime: isOpeningTime ? _toilet!.openingTime : _toilet!.closingTime,
+    );
+
+    if (selectedTime != null) {
+      setState(() {
+        final updatedToilet = PublicToilet(
+          id: _toilet!.id,
+          name: _toilet!.name,
+          address: _toilet!.address,
+          latitude: _toilet!.latitude,
+          longitude: _toilet!.longitude,
+          status: _toilet!.status,
+          lastMaintenanceDate: _toilet!.lastMaintenanceDate,
+          facilities: _toilet!.facilities,
+          maintenanceNotes: _toilet!.maintenanceNotes,
+          imageUrls: _toilet!.imageUrls,
+          isAssigned: _toilet!.isAssigned,
+          ownerId: _toilet!.ownerId,
+          ownerEmail: _toilet!.ownerEmail,
+          openingTime: isOpeningTime ? selectedTime : _toilet!.openingTime,
+          closingTime: isOpeningTime ? _toilet!.closingTime : selectedTime,
+          is24Hours: _toilet!.is24Hours,
+          operatingDays: _toilet!.operatingDays,
+          features: _toilet!.features,
+        );
+        _toilet = updatedToilet;
+      });
+    }
   }
 
   void _showDeleteImageConfirmation(int index) {

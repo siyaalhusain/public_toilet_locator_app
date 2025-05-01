@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 // Import the AddMaintainerPage
 import 'AddMaintainerPage.dart';
+import 'Assign_Task.dart';
 
 class ImprovedManageMaintainersPage extends StatefulWidget {
   const ImprovedManageMaintainersPage({Key? key}) : super(key: key);
@@ -243,26 +244,30 @@ class _ImprovedManageMaintainersPageState
         : 'Unknown date';
 
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      margin: const EdgeInsets.symmetric(
+          horizontal: 8, vertical: 6), // Reduced horizontal margin
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10), // Reduced from 12
       ),
-      elevation: 2,
+      elevation: 1, // Reduced from 2
       child: Padding(
-        padding: const EdgeInsets.all(16.0),
+        padding:
+            const EdgeInsets.all(8.0), // Further reduced padding from 12 to 8
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min, // Added to minimize row width
               children: [
                 CircleAvatar(
-                  radius: 25,
+                  radius: 18, // Further reduced from 22 to 18
                   backgroundColor: Colors.blue.shade100,
-                  child:
-                      Icon(Icons.person, color: Colors.blue.shade800, size: 30),
+                  child: Icon(Icons.person,
+                      color: Colors.blue.shade800,
+                      size: 20), // Reduced from 26 to 20
                 ),
-                const SizedBox(width: 16),
+                const SizedBox(width: 8), // Reduced from 10 to 8
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -270,21 +275,24 @@ class _ImprovedManageMaintainersPageState
                       Text(
                         fullName,
                         style: const TextStyle(
-                          fontSize: 18,
+                          fontSize: 15, // Further reduced from 16
                           fontWeight: FontWeight.bold,
                         ),
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 2), // Reduced from 4 to 2
                       Row(
                         children: [
-                          Icon(Icons.email, size: 16, color: Colors.grey[600]),
-                          const SizedBox(width: 6),
+                          Icon(Icons.email,
+                              size: 12,
+                              color: Colors.grey[600]), // Reduced from 14 to 12
+                          const SizedBox(width: 3), // Reduced from 4 to 3
                           Expanded(
                             child: Text(
                               email,
                               style: TextStyle(
                                 color: Colors.grey[700],
-                                fontSize: 14,
+                                fontSize: 12, // Reduced from 13 to 12
                               ),
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -293,33 +301,43 @@ class _ImprovedManageMaintainersPageState
                       ),
                       if (phone != 'No phone')
                         Padding(
-                          padding: const EdgeInsets.only(top: 4),
+                          padding: const EdgeInsets.only(
+                              top: 1), // Reduced from 2 to 1
                           child: Row(
                             children: [
                               Icon(Icons.phone,
-                                  size: 16, color: Colors.grey[600]),
-                              const SizedBox(width: 6),
-                              Text(
-                                phone,
-                                style: TextStyle(
-                                  color: Colors.grey[700],
-                                  fontSize: 14,
+                                  size: 12,
+                                  color: Colors
+                                      .grey[600]), // Reduced from 14 to 12
+                              const SizedBox(width: 3), // Reduced from 4 to 3
+                              Expanded(
+                                child: Text(
+                                  phone,
+                                  style: TextStyle(
+                                    color: Colors.grey[700],
+                                    fontSize: 12, // Reduced from 13 to 12
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ),
                             ],
                           ),
                         ),
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 1), // Reduced from 2 to 1
                       Row(
                         children: [
                           Icon(Icons.calendar_today,
-                              size: 16, color: Colors.grey[600]),
-                          const SizedBox(width: 6),
-                          Text(
-                            'Added: $formattedDate',
-                            style: TextStyle(
-                              color: Colors.grey[700],
-                              fontSize: 14,
+                              size: 12,
+                              color: Colors.grey[600]), // Reduced from 14 to 12
+                          const SizedBox(width: 3), // Reduced from 4 to 3
+                          Expanded(
+                            child: Text(
+                              'Added: $formattedDate',
+                              style: TextStyle(
+                                color: Colors.grey[700],
+                                fontSize: 12, // Reduced from 13 to 12
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         ],
@@ -327,29 +345,68 @@ class _ImprovedManageMaintainersPageState
                     ],
                   ),
                 ),
-                Row(
+                // Changed to a column layout for buttons to save horizontal space
+                Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    IconButton(
-                      icon: Icon(Icons.edit, color: Colors.blue[700]),
-                      tooltip: 'Edit maintainer',
-                      onPressed: () {
-                        _showEditMaintainerDialog(maintainer.id, data);
-                      },
+                    SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: IconButton(
+                        icon:
+                            Icon(Icons.edit, color: Colors.blue[700], size: 14),
+                        padding: EdgeInsets.zero,
+                        tooltip: 'Edit',
+                        constraints:
+                            const BoxConstraints(minWidth: 28, minHeight: 28),
+                        onPressed: () {
+                          _showEditMaintainerDialog(maintainer.id, data);
+                        },
+                      ),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.delete_outline, color: Colors.red),
-                      tooltip: 'Delete maintainer',
-                      onPressed: () {
-                        _confirmDeleteMaintainer(maintainer.id, email);
-                      },
+                    SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: IconButton(
+                        icon: Icon(Icons.delete_outline,
+                            color: Colors.red, size: 14),
+                        padding: EdgeInsets.zero,
+                        tooltip: 'Delete',
+                        constraints:
+                            const BoxConstraints(minWidth: 28, minHeight: 28),
+                        onPressed: () {
+                          _confirmDeleteMaintainer(maintainer.id, email);
+                        },
+                      ),
+                    ),
+                    SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: IconButton(
+                        icon: Icon(Icons.assignment,
+                            color: Colors.green[700], size: 14),
+                        padding: EdgeInsets.zero,
+                        tooltip: 'Assign Task',
+                        constraints:
+                            const BoxConstraints(minWidth: 28, minHeight: 28),
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => AssignTaskPage(
+                                maintainerId: maintainer.id,
+                                maintainerName: fullName,
+                                maintainerEmail: email,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
                     ),
                   ],
                 ),
               ],
             ),
-            // Show assigned toilets count (would require another query)
-            // Could be added in future improvement
           ],
         ),
       ),

@@ -7,6 +7,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import 'package:geolocator/geolocator.dart';
+import 'package:project_x/screen/view_reviews_page.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_rating_bar/flutter_rating_bar.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -42,10 +43,12 @@ class _HomePageState extends State<HomePage> {
   final CollectionReference toiletsCollection =
       FirebaseFirestore.instance.collection('toilets');
   Completer<GoogleMapController> _controller = Completer();
+  String? _currentUserId;
 
   @override
   void initState() {
     super.initState();
+    _currentUserId = FirebaseAuth.instance.currentUser?.uid;
     _loadMarkers();
     _getUserLocation();
     _loadSearchHistory();
@@ -54,7 +57,8 @@ class _HomePageState extends State<HomePage> {
   // Load search history from shared preferences
   Future<void> _loadSearchHistory() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
-    List<String>? storedData = prefs.getStringList('search_history');
+    List<String>? storedData =
+        prefs.getStringList('search_history_$_currentUserId');
 
     if (storedData != null) {
       setState(() {
@@ -65,16 +69,25 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Save search to history
+  // Update _saveSearchHistory to save with user-specific key:
   Future<void> _saveSearchHistory(Map<String, dynamic> searchData) async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
+
+    // Add user ID to the search data
+    searchData['userId'] = _currentUserId;
+
     _searchHistory.add(searchData);
+
+    // Filter to keep only this user's history
+    _searchHistory = _searchHistory
+        .where((item) => item['userId'] == _currentUserId)
+        .toList();
 
     // Convert list of maps to a list of JSON strings
     List<String> encodedList =
         _searchHistory.map((item) => json.encode(item)).toList();
 
-    await prefs.setStringList('search_history', encodedList);
+    await prefs.setStringList('search_history_$_currentUserId', encodedList);
     setState(() {});
   }
 
@@ -142,7 +155,10 @@ class _HomePageState extends State<HomePage> {
                 infoWindow: InfoWindow(
                   title: name,
                   onTap: () {
-                    _showToiletDetails(data);
+                    _showToiletDetails({
+                      ...data, // Spread all the data
+                      'id': doc.id, // Make sure ID is included
+                    });
                   },
                 ),
               ),
@@ -201,17 +217,22 @@ class _HomePageState extends State<HomePage> {
                 title: data['name'] ?? 'Unnamed Toilet',
                 snippet: "Tap for details",
                 onTap: () {
-                  _showToiletDetails(data);
+                  _showToiletDetails({
+                    ...data,
+                    'id': doc.id,
+                  });
                 },
               ),
             ),
           );
 
-          if (!_searchHistory.any((history) => history['id'] == doc.id)) {
+          if (!_searchHistory.any((history) =>
+              history['id'] == doc.id && history['userId'] == _currentUserId)) {
             _saveSearchHistory({
               'id': doc.id,
               'name': data['name'],
-              'location': data['location']
+              'location': data['location'],
+              'userId': _currentUserId, // Include user ID
             });
           }
         }
@@ -256,10 +277,32 @@ class _HomePageState extends State<HomePage> {
   }
 
   // Show toilet details dialog
-  void _showToiletDetails(Map<String, dynamic> data) {
+// Combined _showToiletDetails function with both details and reviews
+// Show toilet details dialog with only its own reviews
+  void _showToiletDetails(Map<String, dynamic> data) async {
     double toiletLat = data['location']['latitude'];
     double toiletLng = data['location']['longitude'];
     double avgRating = data['average_rating'] ?? 0.0;
+    String toiletId = data['id']; // Make sure this is the correct ID field
+
+    // Fetch reviews for this specific toilet only
+    QuerySnapshot reviewsSnapshot = await FirebaseFirestore.instance
+        .collection('washroom_reviews')
+        .where('toilet_id', isEqualTo: toiletId) // Filter by this toilet's ID
+        .orderBy('timestamp', descending: true)
+        .limit(3) // Show only 3 most recent reviews
+        .get();
+
+    List<Map<String, dynamic>> reviews = reviewsSnapshot.docs.map((doc) {
+      var reviewData = doc.data() as Map<String, dynamic>;
+      return {
+        'user_name': reviewData['user_name'],
+        'rating': reviewData['rating'],
+        'comment': reviewData['comment'],
+        'timestamp': reviewData['timestamp'],
+        'image_url': reviewData['image_url'],
+      };
+    }).toList();
 
     showDialog(
       context: context,
@@ -280,55 +323,141 @@ class _HomePageState extends State<HomePage> {
               ),
             ],
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.blue.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.list_alt, color: Colors.blue),
-                    SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        "Amenities: ${data['amenities']?.join(', ') ?? 'Not listed'}",
-                        style: TextStyle(fontSize: 14),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Toilet details
+                Container(
+                  padding: EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.list_alt, color: Colors.blue),
+                      SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          "Amenities: ${data['amenities']?.join(', ') ?? 'Not listed'}",
+                          style: TextStyle(fontSize: 14),
+                        ),
                       ),
+                    ],
+                  ),
+                ),
+                SizedBox(height: 15),
+                Row(
+                  children: [
+                    Icon(Icons.star, color: Colors.amber),
+                    SizedBox(width: 10),
+                    Text(
+                      "Rating:",
+                      style: TextStyle(fontWeight: FontWeight.w500),
+                    ),
+                    SizedBox(width: 5),
+                    RatingBarIndicator(
+                      rating: avgRating,
+                      itemBuilder: (context, _) => const Icon(
+                        Icons.star,
+                        color: Colors.amber,
+                      ),
+                      itemCount: 5,
+                      itemSize: 20.0,
+                    ),
+                    Text(
+                      " ($avgRating)",
+                      style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                   ],
                 ),
-              ),
-              SizedBox(height: 15),
-              Row(
-                children: [
-                  Icon(Icons.star, color: Colors.amber),
-                  SizedBox(width: 10),
+
+                // Reviews section
+                if (reviews.isNotEmpty) ...[
+                  Divider(height: 25),
                   Text(
-                    "Rating:",
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                  SizedBox(width: 5),
-                  RatingBarIndicator(
-                    rating: avgRating,
-                    itemBuilder: (context, _) => const Icon(
-                      Icons.star,
-                      color: Colors.amber,
+                    "Recent Reviews",
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
                     ),
-                    itemCount: 5,
-                    itemSize: 20.0,
                   ),
-                  Text(
-                    " ($avgRating)",
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                  SizedBox(height: 8),
+                  ...reviews
+                      .map((review) => Padding(
+                            padding: EdgeInsets.only(bottom: 12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    CircleAvatar(
+                                      backgroundColor: Colors.blue.shade100,
+                                      child: Icon(Icons.person,
+                                          color: Colors.blue),
+                                    ),
+                                    SizedBox(width: 8),
+                                    Text(
+                                      review['user_name'] ?? 'Anonymous',
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.w500),
+                                    ),
+                                    Spacer(),
+                                    RatingBarIndicator(
+                                      rating: review['rating'] ?? 0.0,
+                                      itemBuilder: (context, _) => Icon(
+                                        Icons.star,
+                                        color: Colors.amber,
+                                      ),
+                                      itemCount: 5,
+                                      itemSize: 16.0,
+                                    ),
+                                  ],
+                                ),
+                                SizedBox(height: 4),
+                                if (review['comment'] != null &&
+                                    review['comment'].isNotEmpty)
+                                  Text(
+                                    review['comment'],
+                                    style: TextStyle(fontSize: 14),
+                                  ),
+                                if (review['image_url'] != null)
+                                  Padding(
+                                    padding: EdgeInsets.only(top: 8),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: Image.network(
+                                        review['image_url'],
+                                        height: 100,
+                                        width: double.infinity,
+                                        fit: BoxFit.cover,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ))
+                      .toList(),
+                  TextButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => ViewReviewsPage(
+                            toiletId: data[
+                                'id'], // Pass the toilet ID to ViewReviewsPage
+                          ),
+                        ),
+                      );
+                    },
+                    child: Text("View all reviews"),
                   ),
                 ],
-              ),
-            ],
+              ],
+            ),
           ),
           actions: [
             TextButton(
@@ -351,6 +480,29 @@ class _HomePageState extends State<HomePage> {
               onPressed: () {
                 Navigator.pop(context);
                 _getDirections(LatLng(toiletLat, toiletLng));
+              },
+            ),
+            ElevatedButton.icon(
+              icon: Icon(Icons.rate_review),
+              label: Text("Review"),
+              style: ElevatedButton.styleFrom(
+                foregroundColor: Colors.white,
+                backgroundColor: Colors.green,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+              ),
+              onPressed: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => AddCommentPage(
+                      toiletId: toiletId, // Use the correct ID here
+                      toiletName: data['name'],
+                    ),
+                  ),
+                );
               },
             ),
           ],
@@ -796,7 +948,10 @@ class _HomePageState extends State<HomePage> {
                                   ),
                                 ),
                               ),
-                            ..._searchHistory.map((history) {
+                            ..._searchHistory
+                                .where((history) =>
+                                    history['userId'] == _currentUserId)
+                                .map((history) {
                               return ListTile(
                                 leading: CircleAvatar(
                                   backgroundColor:

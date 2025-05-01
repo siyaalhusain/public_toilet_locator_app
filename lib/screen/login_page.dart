@@ -5,6 +5,7 @@ import 'dart:ui';
 import 'home_page.dart';
 import 'sign_up.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 class LoginScreen extends StatefulWidget {
   final String? errorMessage;
@@ -140,6 +141,120 @@ class _LoginScreenState extends State<LoginScreen>
     }
 
     return false;
+  }
+
+  Future<void> _resetPassword(String email) async {
+    if (email.isEmpty) {
+      setState(() {
+        _loginError = "Please enter your email address";
+      });
+      return;
+    }
+
+    try {
+      EasyLoading.show(status: 'Sending password reset email...');
+      await _auth.sendPasswordResetEmail(email: email);
+      EasyLoading.dismiss();
+
+      // Show success dialog
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text("Password Reset Email Sent"),
+          content: Text(
+              "We've sent a password reset link to $email. Please check your inbox."),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text("OK"),
+            ),
+          ],
+        ),
+      );
+    } on FirebaseAuthException catch (e) {
+      EasyLoading.dismiss();
+      String message = "An error occurred. Please try again.";
+      if (e.code == 'user-not-found') {
+        message = "No user found with this email address.";
+      }
+      setState(() {
+        _loginError = message;
+      });
+    } catch (e) {
+      EasyLoading.dismiss();
+      setState(() {
+        _loginError = "An unexpected error occurred. Please try again.";
+      });
+    }
+  }
+
+  final GoogleSignIn _googleSignIn = GoogleSignIn();
+// Add this method to your _LoginScreenState class
+  Future<void> _signInWithGoogle() async {
+    try {
+      EasyLoading.show(status: 'Signing in with Google...');
+
+      // Force account selection every time
+      await _googleSignIn.signOut();
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+
+      if (googleUser == null) {
+        EasyLoading.dismiss();
+        return;
+      }
+
+      final GoogleSignInAuthentication googleAuth =
+          await googleUser.authentication;
+
+      final OAuthCredential credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      final UserCredential userCredential =
+          await _auth.signInWithCredential(credential);
+
+      final bool isNewUser =
+          userCredential.additionalUserInfo?.isNewUser ?? false;
+      final String userId = userCredential.user?.uid ?? '';
+
+      if (isNewUser) {
+        // New user - set default role to 'user'
+        await _firestore.collection('users').doc(userId).set({
+          'email': userCredential.user?.email,
+          'name': userCredential.user?.displayName,
+          'role': 'user', // Default role for new users
+          'isAccountActive': true,
+          'createdAt': FieldValue.serverTimestamp(),
+          'authProvider': 'google',
+        });
+      }
+
+      // Get user document to determine role
+      final userDoc = await _firestore.collection('users').doc(userId).get();
+      final String role = userDoc.exists
+          ? (userDoc.data()?['role'] as String?) ?? 'user'
+          : 'user';
+      EasyLoading.dismiss();
+
+      // Navigate to HomePage with the determined role
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => HomePage(loggedInUserRole: role),
+        ),
+      );
+    } on FirebaseAuthException catch (e) {
+      EasyLoading.dismiss();
+      setState(() {
+        _loginError = "Google sign-in failed: ${e.message}";
+      });
+    } catch (e) {
+      EasyLoading.dismiss();
+      setState(() {
+        _loginError = "Error signing in with Google";
+      });
+    }
   }
 
   void _login() async {
@@ -416,7 +531,52 @@ class _LoginScreenState extends State<LoginScreen>
                                     alignment: Alignment.centerRight,
                                     child: TextButton(
                                       onPressed: () {
-                                        // Handle password reset
+                                        showDialog(
+                                          context: context,
+                                          builder: (context) {
+                                            final emailController =
+                                                TextEditingController(
+                                                    text:
+                                                        _emailController.text);
+                                            return AlertDialog(
+                                              title: Text("Reset Password"),
+                                              content: Column(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  Text(
+                                                      "Enter your email to receive a password reset link:"),
+                                                  SizedBox(height: 16),
+                                                  TextField(
+                                                    controller: emailController,
+                                                    decoration: InputDecoration(
+                                                      labelText: "Email",
+                                                      border:
+                                                          OutlineInputBorder(),
+                                                    ),
+                                                    keyboardType: TextInputType
+                                                        .emailAddress,
+                                                  ),
+                                                ],
+                                              ),
+                                              actions: [
+                                                TextButton(
+                                                  onPressed: () =>
+                                                      Navigator.pop(context),
+                                                  child: Text("Cancel"),
+                                                ),
+                                                TextButton(
+                                                  onPressed: () {
+                                                    Navigator.pop(context);
+                                                    _resetPassword(
+                                                        emailController.text
+                                                            .trim());
+                                                  },
+                                                  child: Text("Send"),
+                                                ),
+                                              ],
+                                            );
+                                          },
+                                        );
                                       },
                                       style: TextButton.styleFrom(
                                         foregroundColor: Color(0xFF2E86DE),
@@ -492,7 +652,7 @@ class _LoginScreenState extends State<LoginScreen>
                                       icon: Icons.g_mobiledata,
                                       color: Colors.white,
                                       backgroundColor: Colors.red,
-                                      onPressed: () {},
+                                      onPressed: _signInWithGoogle,
                                     ),
                                     const SizedBox(width: 16),
                                     _buildSocialButton(
