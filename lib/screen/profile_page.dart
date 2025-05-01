@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:project_x/screen/ManageUser.dart';
 import 'package:project_x/screen/update_maintanance_status.dart';
 import 'package:project_x/screen/user_counting_page.dart';
+import 'package:project_x/screen/view_counting_page.dart';
 
 import 'AddCommentPage.dart';
 import 'AddMaintainerPage.dart';
@@ -11,6 +12,7 @@ import 'ManageMaintainersPage.dart';
 import 'ManageToiletsPage.dart';
 import 'ReportIssuePage.dart';
 import 'ViewReportsPage.dart';
+import 'View_assign_task.dart';
 import 'contact_us_page.dart';
 import 'view_reviews_page.dart';
 import 'admin_payment_verification_screen.dart'; // Import the payment verification screen
@@ -403,6 +405,11 @@ class ProfilePage extends StatelessWidget {
             page: ViewReportsPage(),
           ),
           RoleAction(
+            title: 'Toilet Usage Statistics',
+            icon: Icons.bar_chart_rounded,
+            page: OwnerCountingPage(),
+          ),
+          RoleAction(
             title: 'Contact Us',
             icon: Icons.contact_support_rounded,
             page: ContactUsPage(),
@@ -413,7 +420,10 @@ class ProfilePage extends StatelessWidget {
           RoleAction(
             title: 'View Reviews',
             icon: Icons.reviews_rounded,
-            page: ViewReviewsPage(),
+            page: ViewReviewsPage(
+              toiletId:
+                  'all', // Or implement a selector to let users choose a toilet
+            ),
           ),
           RoleAction(
             title: 'Post Comment & Photo',
@@ -436,10 +446,8 @@ class ProfilePage extends StatelessWidget {
           RoleAction(
             title: 'Toilet User Counting',
             icon: Icons.numbers_rounded,
-            page: ToiletUserCountingPage(
+            page: CounterPage(
               toiletId: 'TOILET001', // Replace with actual toilet ID
-              maintainerId:
-                  'MAINTAINER001', // Replace with actual maintainer ID
             ),
           ),
           RoleAction(
@@ -447,6 +455,11 @@ class ProfilePage extends StatelessWidget {
             icon: Icons.construction_rounded,
             page:
                 UpdateMaintenanceStatusPage(), // Point to our implemented page
+          ),
+          RoleAction(
+            title: 'View My Tasks',
+            icon: Icons.assignment,
+            page: const ViewAssignedTasksPage(), // Your target page
           ),
         ];
       default:

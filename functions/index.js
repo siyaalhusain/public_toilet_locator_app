@@ -1,7 +1,8 @@
-// index.js - Updated Firebase Cloud Functions with enhanced notification and payment proof support
+// index.js - Updated Firebase Cloud Functions with enhanced notification, payment proof, and email support
 
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
+const nodemailer = require('nodemailer');
 admin.initializeApp();
 
 /**
@@ -61,6 +62,13 @@ exports.checkExpiredSubscriptions = functions.pubsub
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             read: false
           });
+
+          // Send email notification for subscription expiration
+          _sendEmail(
+            userData.email,
+            'Your Subscription Has Expired',
+            `Dear User,\n\nYour subscription to our service has expired. Please renew your subscription to continue using all features.\n\nPrevious Plan: ${userData.subscription.planName}\nExpired On: ${userData.subscription.endDate.toDate().toLocaleDateString()}\n\nYou can renew your subscription from your account dashboard.\n\nBest regards,\nThe Support Team`
+          );
 
           expiredCount++;
         }
@@ -171,6 +179,30 @@ exports.approvePayment = functions.https.onCall(async (data, context) => {
     // Commit all the operations as a single transaction
     await batch.commit();
 
+    // Send email notification
+    if (userData.email) {
+      const emailSubject = 'Payment Approved - Subscription Activated';
+      const emailMessage = `Dear ${userData.name || 'User'},
+
+Your payment for the ${userData.subscription?.planName || 'subscription'} plan has been approved. Your subscription is now active until ${endDate.toDate().toLocaleDateString()}.
+
+Plan Details:
+- Plan: ${userData.subscription?.planName || 'Unknown Plan'}
+- Amount: $${(userData.subscription?.price || 0).toFixed(2)}
+- Duration: ${duration}
+- Start Date: ${now.toDate().toLocaleDateString()}
+- End Date: ${endDate.toDate().toLocaleDateString()}
+
+Thank you for your payment. You now have full access to all features of your subscription.
+
+If you have any questions or concerns, please contact our support team.
+
+Best regards,
+The Support Team`;
+
+      await _sendEmail(userData.email, emailSubject, emailMessage);
+    }
+
     return {
       success: true,
       message: 'Payment approved successfully',
@@ -206,6 +238,10 @@ exports.rejectPayment = functions.https.onCall(async (data, context) => {
   }
 
   try {
+    // Get the user data for notification details
+    const userDoc = await admin.firestore().collection('users').doc(userId).get();
+    const userData = userDoc.data();
+
     // Create a batch for atomic operations
     const batch = admin.firestore().batch();
 
@@ -216,10 +252,6 @@ exports.rejectPayment = functions.https.onCall(async (data, context) => {
       'subscription.rejectionReason': reason || 'No reason provided',
       'isAccountActive': false,
     });
-
-    // Get the user data for notification details
-    const userDoc = await admin.firestore().collection('users').doc(userId).get();
-    const userData = userDoc.data();
 
     // Add to payment history
     const historyRef = admin.firestore().collection('paymentHistory').doc();
@@ -244,6 +276,24 @@ exports.rejectPayment = functions.https.onCall(async (data, context) => {
 
     // Commit all the operations as a single transaction
     await batch.commit();
+
+    // Send email notification
+    if (userData?.email) {
+      const emailSubject = 'Payment Rejected - Action Required';
+      const emailMessage = `Dear ${userData.name || 'User'},
+
+Unfortunately, your payment for the ${userData.subscription?.planName || 'subscription'} plan (${userData.subscription?.price ? '$' + userData.subscription.price.toFixed(2) : ''}) has been rejected.
+
+Reason for rejection: ${reason || 'No reason provided'}
+
+If you believe this is an error or need assistance with your payment, please contact our support team.
+You can also submit a new payment through your account dashboard.
+
+Best regards,
+The Support Team`;
+
+      await _sendEmail(userData.email, emailSubject, emailMessage);
+    }
 
     return {
       success: true,
@@ -336,6 +386,26 @@ exports.sendSubscriptionExpirationNotices = functions.pubsub
             read: false
           });
 
+          // Send email notification
+          if (userData.email) {
+            const emailSubject = 'Your Subscription Will Expire in 7 Days';
+            const emailMessage = `Dear ${userData.name || 'User'},
+
+Your subscription will expire in 7 days on ${endDate.toLocaleDateString()}.
+
+To avoid service interruption, please renew your subscription before the expiration date.
+
+Current Plan: ${userData.subscription.planName || 'Unknown Plan'}
+Expiration Date: ${endDate.toLocaleDateString()}
+
+You can renew your subscription from your account dashboard.
+
+Best regards,
+The Support Team`;
+
+            await _sendEmail(userData.email, emailSubject, emailMessage);
+          }
+
           notificationsSent++;
         }
         // Check if subscription ends tomorrow (last warning)
@@ -350,6 +420,26 @@ exports.sendSubscriptionExpirationNotices = functions.pubsub
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             read: false
           });
+
+          // Send email notification
+          if (userData.email) {
+            const emailSubject = 'URGENT: Your Subscription Expires Tomorrow';
+            const emailMessage = `Dear ${userData.name || 'User'},
+
+URGENT: Your subscription will expire TOMORROW on ${endDate.toLocaleDateString()}.
+
+To avoid service interruption, please renew your subscription immediately.
+
+Current Plan: ${userData.subscription.planName || 'Unknown Plan'}
+Expiration Date: ${endDate.toLocaleDateString()}
+
+You can renew your subscription from your account dashboard.
+
+Best regards,
+The Support Team`;
+
+            await _sendEmail(userData.email, emailSubject, emailMessage);
+          }
 
           notificationsSent++;
         }
@@ -460,6 +550,28 @@ exports.renewSubscription = functions.https.onCall(async (data, context) => {
     // Commit all operations
     await batch.commit();
 
+    // Send confirmation email to user
+    if (userData.email) {
+      const emailSubject = 'Subscription Renewal Request Received';
+      const emailMessage = `Dear ${userData.name || 'User'},
+
+We have received your subscription renewal request for the ${plan.name} plan.
+
+Plan Details:
+- Plan: ${plan.name}
+- Price: $${plan.price.toFixed(2)}
+- Duration: ${duration}
+
+Your request is pending approval. We will notify you once your payment has been processed.
+
+Thank you for continuing to use our service!
+
+Best regards,
+The Support Team`;
+
+      await _sendEmail(userData.email, emailSubject, emailMessage);
+    }
+
     return {
       success: true,
       message: 'Subscription renewal request submitted successfully'
@@ -489,6 +601,10 @@ exports.updatePaymentDetails = functions.https.onCall(async (data, context) => {
   }
 
   try {
+    // Get user data for email notification
+    const userDoc = await admin.firestore().collection('users').doc(userId).get();
+    const userData = userDoc.data();
+
     // Create batch for atomic operations
     const batch = admin.firestore().batch();
 
@@ -525,6 +641,25 @@ exports.updatePaymentDetails = functions.https.onCall(async (data, context) => {
 
     // Commit all operations
     await batch.commit();
+
+    // Send email notification
+    if (userData?.email) {
+      const emailSubject = 'Payment Details Updated';
+      const emailMessage = `Dear ${userData.name || 'User'},
+
+Your payment details have been updated by our administrative team.
+
+Updated Details:
+- Plan: ${planName}
+- Price: $${parseFloat(price).toFixed(2)}
+
+If you have any questions about these changes, please contact our support team.
+
+Best regards,
+The Support Team`;
+
+      await _sendEmail(userData.email, emailSubject, emailMessage);
+    }
 
     return {
       success: true,
@@ -1057,5 +1192,184 @@ exports.ensureNotificationsCollection = functions.https.onCall(async (data, cont
   } catch (error) {
     console.error('Error ensuring notifications collection:', error);
     throw new functions.https.HttpsError('internal', 'Failed to ensure notifications collection exists', error);
+  }
+});
+
+/**
+ * Cloud Function to send email notifications to users
+ * This function can be called from any client application
+ */
+exports.sendEmailNotification = functions.https.onCall(async (data, context) => {
+  // Verify authentication
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'You must be logged in to send email notifications');
+  }
+
+  const { email, subject, message } = data;
+
+  if (!email || !subject || !message) {
+    throw new functions.https.HttpsError('invalid-argument', 'Email, subject, and message are required');
+  }
+
+  try {
+    // Call the internal email function
+    await _sendEmail(email, subject, message);
+
+    // Log the successful email sending
+    await admin.firestore().collection('emailLogs').add({
+      to: email,
+      subject: subject,
+      sentAt: admin.firestore.FieldValue.serverTimestamp(),
+      sentBy: context.auth.uid,
+      status: 'sent'
+    });
+
+    return {
+      success: true,
+      message: 'Email notification sent successfully'
+    };
+  } catch (error) {
+    console.error('Error sending email notification:', error);
+
+    // Log the error
+    await admin.firestore().collection('emailLogs').add({
+      to: email,
+      subject: subject,
+      sentAt: admin.firestore.FieldValue.serverTimestamp(),
+      sentBy: context.auth.uid,
+      status: 'error',
+      error: error.message
+    });
+
+    throw new functions.https.HttpsError('internal', 'Failed to send email notification', error);
+  }
+});
+
+/**
+ * Internal helper function to send emails
+ * This centralizes the email sending logic to be used by other Cloud Functions
+ */
+async function _sendEmail(email, subject, message) {
+  try {
+    // Configure nodemailer with your email service
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',  // Or your preferred email service
+      auth: {
+        user: functions.config().email.user,
+        pass: functions.config().email.password
+      }
+    });
+
+    // Email options
+    const mailOptions = {
+      from: functions.config().email.from || '"Your App" <noreply@yourapp.com>',
+      to: email,
+      subject: subject,
+      text: message,
+      html: message.replace(/\n/g, '<br>')
+    };
+
+    // Send the email
+    const info = await transporter.sendMail(mailOptions);
+    console.log('Email sent:', info.messageId);
+    return info;
+  } catch (error) {
+    console.error('Error in _sendEmail helper function:', error);
+    throw error; // Re-throw to be handled by the calling function
+  }
+}
+
+/**
+ * Cloud Function to delete payment verification
+ * This can be called from the admin dashboard
+ */
+exports.deletePaymentVerification = functions.https.onCall(async (data, context) => {
+  // Verify that the caller is an admin
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'You must be logged in to delete payment verifications');
+  }
+
+  // You would verify admin role here in production
+
+  const { userId } = data;
+
+  if (!userId) {
+    throw new functions.https.HttpsError('invalid-argument', 'User ID is required');
+  }
+
+  try {
+    // Get user data before deleting
+    const userDoc = await admin.firestore().collection('users').doc(userId).get();
+
+    if (!userDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'User not found');
+    }
+
+    const userData = userDoc.data();
+    const userEmail = userData.email;
+    const userName = userData.name || 'User';
+    const planName = userData.subscription?.planName || 'Unknown Plan';
+
+    // Create a batch for atomic operations
+    const batch = admin.firestore().batch();
+
+    // Reference to user document
+    const userRef = admin.firestore().collection('users').doc(userId);
+
+    // Remove the subscription field from the user document
+    batch.update(userRef, {
+      'subscription': admin.firestore.FieldValue.delete(),
+      'isAccountActive': false,
+    });
+
+    // Add to payment history
+    const historyRef = admin.firestore().collection('paymentHistory').doc();
+    batch.set(historyRef, {
+      userId: userId,
+      email: userEmail,
+      action: 'verification_deleted',
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+      processedBy: context.auth.uid,
+      notes: 'Payment verification deleted by admin'
+    });
+
+    // Create notification document
+    const notificationRef = admin.firestore().collection('notifications').doc();
+    batch.set(notificationRef, {
+      userId: userId,
+      type: 'payment_verification_deleted',
+      message: 'Your payment verification has been deleted by admin.',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      read: false
+    });
+
+    // Commit all the operations as a single transaction
+    await batch.commit();
+
+    // Send email notification
+    if (userEmail) {
+      const emailSubject = 'Payment Verification Deleted';
+      const emailMessage = `Dear ${userName},
+
+This is to inform you that your payment verification for the ${planName} plan has been deleted by an administrator.
+
+If you wish to continue using our services, please submit a new payment through your account dashboard.
+
+If you have any questions or concerns, please contact our support team.
+
+Best regards,
+The Support Team`;
+
+      await _sendEmail(userEmail, emailSubject, emailMessage);
+    }
+
+    return {
+      success: true,
+      message: 'Payment verification deleted successfully',
+      notificationId: notificationRef.id
+    };
+  } catch (error) {
+    console.error('Error deleting payment verification:', error);
+    throw new functions.https.HttpsError('internal', 'Failed to delete payment verification', error);
   }
 });

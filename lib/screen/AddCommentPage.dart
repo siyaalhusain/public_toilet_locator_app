@@ -6,7 +6,8 @@ import 'dart:io';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:geolocator/geolocator.dart';
-import 'dart:math' as Math;
+import 'dart:math' as math;
+import 'package:geocoding/geocoding.dart';
 import 'MapSelectionPage.dart';
 
 class LatLng {
@@ -46,7 +47,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
   final TextEditingController _searchController = TextEditingController();
   LatLng? _userLocation;
   bool _isSearching = false;
-  String _searchError = '';
+  String? _searchError;
 
   @override
   void initState() {
@@ -57,7 +58,6 @@ class _AddCommentPageState extends State<AddCommentPage> {
     _loadRecentToilets();
   }
 
-  // Get user's current location
   Future<void> _getUserLocation() async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -88,7 +88,6 @@ class _AddCommentPageState extends State<AddCommentPage> {
         _userLocation = LatLng(position.latitude, position.longitude);
       });
 
-      // Load nearby toilets once we have user's location
       _fetchNearbyToilets();
     } catch (e) {
       print("Error getting location: $e");
@@ -96,7 +95,6 @@ class _AddCommentPageState extends State<AddCommentPage> {
     }
   }
 
-  // Load toilets the user has recently commented on
   Future<void> _loadRecentToilets() async {
     try {
       User? currentUser = FirebaseAuth.instance.currentUser;
@@ -114,15 +112,14 @@ class _AddCommentPageState extends State<AddCommentPage> {
 
       for (var doc in reviewsSnapshot.docs) {
         var data = doc.data() as Map<String, dynamic>;
-        String toiletId = data['toilet_id'];
+        String? toiletId = data['toilet_id'] as String?;
 
-        // Skip duplicate toilets
-        if (seenToiletIds.contains(toiletId)) continue;
+        if (toiletId == null || seenToiletIds.contains(toiletId)) continue;
         seenToiletIds.add(toiletId);
 
         recentToilets.add({
           'id': toiletId,
-          'name': data['toilet_name'],
+          'name': data['toilet_name'] ?? 'Unnamed Toilet',
           'isRecent': true,
         });
       }
@@ -132,10 +129,10 @@ class _AddCommentPageState extends State<AddCommentPage> {
       });
     } catch (e) {
       print("Error loading recent toilets: $e");
+      _showSnackBar("Error loading recent toilets", Colors.red);
     }
   }
 
-  // Fetch toilets near user's current location
   Future<void> _fetchNearbyToilets() async {
     if (_userLocation == null) return;
 
@@ -154,11 +151,9 @@ class _AddCommentPageState extends State<AddCommentPage> {
               (data['location']['longitude'] as num?)?.toDouble();
 
           if (toiletLat != null && toiletLng != null) {
-            // Calculate distance between user and toilet
             double distanceInKm = _calculateDistance(_userLocation!.latitude,
                 _userLocation!.longitude, toiletLat, toiletLng);
 
-            // Include only toilets within 10km radius
             if (distanceInKm <= 10) {
               nearbyToilets.add({
                 'id': doc.id,
@@ -172,28 +167,28 @@ class _AddCommentPageState extends State<AddCommentPage> {
         }
       }
 
-      // Sort by distance
-      nearbyToilets.sort((a, b) => (a['distance']).compareTo(b['distance']));
+      nearbyToilets.sort((a, b) =>
+          (a['distance'] as double).compareTo(b['distance'] as double));
 
       setState(() {
         _nearbyToilets = nearbyToilets;
       });
     } catch (e) {
       print("Error fetching nearby toilets: $e");
+      _showSnackBar("Error fetching nearby toilets", Colors.red);
     }
   }
 
-  // Helper function to calculate distance between two coordinates
   double _calculateDistance(
       double lat1, double lon1, double lat2, double lon2) {
-    const double p = 0.017453292519943295; // Math.PI / 180
+    const double p = 0.017453292519943295;
     double a = 0.5 -
-        Math.cos((lat2 - lat1) * p) / 2 +
-        Math.cos(lat1 * p) *
-            Math.cos(lat2 * p) *
-            (1 - Math.cos((lon2 - lon1) * p)) /
+        math.cos((lat2 - lat1) * p) / 2 +
+        math.cos(lat1 * p) *
+            math.cos(lat2 * p) *
+            (1 - math.cos((lon2 - lon1) * p)) /
             2;
-    return 12742 * Math.asin(Math.sqrt(a)); // 2 * R; R = 6371 km
+    return 12742 * math.asin(math.sqrt(a));
   }
 
   Future<String?> _uploadImage(File image) async {
@@ -206,6 +201,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
       return await snapshot.ref.getDownloadURL();
     } catch (e) {
       print("Image upload error: $e");
+      _showSnackBar("Failed to upload image", Colors.red);
       return null;
     }
   }
@@ -214,7 +210,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
-      shape: RoundedRectangleBorder(
+      shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (context) {
@@ -226,7 +222,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
                 child: Container(
                   width: 40,
                   height: 4,
-                  margin: EdgeInsets.only(bottom: 20),
+                  margin: const EdgeInsets.only(bottom: 20),
                   decoration: BoxDecoration(
                     color: Colors.grey[300],
                     borderRadius: BorderRadius.circular(2),
@@ -235,15 +231,15 @@ class _AddCommentPageState extends State<AddCommentPage> {
               ),
               ListTile(
                 leading: Container(
-                  padding: EdgeInsets.all(10),
+                  padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
                     color: Colors.blue.shade50,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Icon(Icons.camera_alt, color: Colors.blue),
+                  child: const Icon(Icons.camera_alt, color: Colors.blue),
                 ),
-                title: Text("Take a Photo"),
-                subtitle: Text("Use your camera to take a picture"),
+                title: const Text("Take a Photo"),
+                subtitle: const Text("Use your camera to take a picture"),
                 onTap: () async {
                   Navigator.pop(context);
                   final pickedFile =
@@ -255,18 +251,18 @@ class _AddCommentPageState extends State<AddCommentPage> {
                   }
                 },
               ),
-              Divider(height: 0.5, indent: 70),
+              const Divider(height: 0.5, indent: 70),
               ListTile(
                 leading: Container(
-                  padding: EdgeInsets.all(10),
+                  padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
                     color: Colors.green.shade50,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Icon(Icons.photo_library, color: Colors.green),
+                  child: const Icon(Icons.photo_library, color: Colors.green),
                 ),
-                title: Text("Choose from Gallery"),
-                subtitle: Text("Select an existing photo"),
+                title: const Text("Choose from Gallery"),
+                subtitle: const Text("Select an existing photo"),
                 onTap: () async {
                   Navigator.pop(context);
                   final pickedFile =
@@ -286,6 +282,8 @@ class _AddCommentPageState extends State<AddCommentPage> {
   }
 
   Future<void> _updateToiletRating() async {
+    if (_selectedToiletId == null) return;
+
     try {
       var reviewsSnapshot = await FirebaseFirestore.instance
           .collection('washroom_reviews')
@@ -306,7 +304,24 @@ class _AddCommentPageState extends State<AddCommentPage> {
       }
     } catch (e) {
       print("Error updating toilet rating: $e");
+      _showSnackBar("Error updating toilet rating", Colors.red);
     }
+  }
+
+  List<String> _generateSearchTokens(String text) {
+    if (text.isEmpty) return [];
+
+    var words = text.toLowerCase().split(RegExp(r'\s+'));
+    var uniqueWords = words.toSet().toList();
+
+    List<String> tokens = [];
+    tokens.addAll(uniqueWords);
+
+    for (int i = 0; i < words.length - 1; i++) {
+      tokens.add('${words[i]} ${words[i + 1]}');
+    }
+
+    return tokens;
   }
 
   Future<void> _submitComment() async {
@@ -321,50 +336,156 @@ class _AddCommentPageState extends State<AddCommentPage> {
       return;
     }
 
-    setState(() {
-      _isSubmitting = true;
-    });
+    setState(() => _isSubmitting = true);
 
     try {
       String? imageUrl;
       if (_selectedImage != null) {
         imageUrl = await _uploadImage(_selectedImage!);
+        if (imageUrl == null) {
+          setState(() => _isSubmitting = false);
+          return;
+        }
       }
 
       User? user = FirebaseAuth.instance.currentUser;
-      String userId = user?.uid ?? "anonymous";
-      String userName = user?.displayName ?? "Unknown User";
+      List<String> searchTokens = _generateSearchTokens(commentText);
 
-      // Calculate overall rating as average of category ratings
       double calculatedRating =
           (_categoryRatings.values.reduce((a, b) => a + b) /
               _categoryRatings.length);
-      // Round to nearest 0.5
       _rating = (calculatedRating * 2).round() / 2;
 
       await FirebaseFirestore.instance.collection('washroom_reviews').add({
         'toilet_id': _selectedToiletId,
         'toilet_name': _selectedToiletName,
-        'user_id': userId,
-        'user_name': userName,
+        'user_id': user?.uid ?? "anonymous",
+        'user_name': user?.displayName ?? "Unknown User",
         'comment': commentText,
         'image_url': imageUrl,
         'rating': _rating,
         'category_ratings': _categoryRatings,
         'timestamp': FieldValue.serverTimestamp(),
+        'searchable_tokens': searchTokens,
+        'location': GeoPoint(
+          _userLocation?.latitude ?? 0,
+          _userLocation?.longitude ?? 0,
+        ),
+        'user_photo_url': user?.photoURL,
       });
 
       await _updateToiletRating();
-
       _showSnackBar("Review added successfully!", Colors.green);
-      Navigator.pop(context, true); // Return true to indicate success
+      Navigator.pop(context, true);
     } catch (e) {
-      _showSnackBar("Error submitting review: $e", Colors.red);
+      _showSnackBar("Error submitting review: ${e.toString()}", Colors.red);
     } finally {
-      setState(() {
-        _isSubmitting = false;
-      });
+      setState(() => _isSubmitting = false);
     }
+  }
+
+  Future<List<Map<String, dynamic>>> _filterReviews({
+    String? toiletId,
+    String? userId,
+    String? searchQuery,
+    double? minRating,
+    List<String>? categories,
+  }) async {
+    try {
+      Query query = FirebaseFirestore.instance.collection('washroom_reviews');
+
+      if (toiletId != null) {
+        query = query.where('toilet_id', isEqualTo: toiletId);
+      }
+
+      if (userId != null) {
+        query = query.where('user_id', isEqualTo: userId);
+      }
+
+      if (minRating != null) {
+        query = query.where('rating', isGreaterThanOrEqualTo: minRating);
+      }
+
+      if (searchQuery != null && searchQuery.isNotEmpty) {
+        final searchTerms = searchQuery.toLowerCase().split(' ');
+        for (var term in searchTerms) {
+          if (term.isNotEmpty) {
+            query = query.where('searchable_tokens', arrayContains: term);
+          }
+        }
+      }
+
+      query = query.orderBy('timestamp', descending: true);
+
+      final snapshot = await query.get();
+      return snapshot.docs.map((doc) {
+        final data = doc.data() as Map<String, dynamic>;
+        return {
+          'id': doc.id,
+          ...data,
+        };
+      }).toList();
+    } catch (e) {
+      print("Error filtering reviews: $e");
+      _showSnackBar("Error filtering reviews", Colors.red);
+      return [];
+    }
+  }
+
+  void _showFilterDialog() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        String? searchQuery;
+        double? minRating;
+
+        return AlertDialog(
+          title: const Text("Filter Reviews"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                decoration: const InputDecoration(
+                    labelText: "Search in comments",
+                    hintText: "e.g. clean, accessible"),
+                onChanged: (value) => searchQuery = value,
+              ),
+              const SizedBox(height: 16),
+              const Text("Minimum Rating"),
+              RatingBar.builder(
+                initialRating: minRating ?? 0,
+                minRating: 1,
+                direction: Axis.horizontal,
+                allowHalfRating: true,
+                itemCount: 5,
+                itemSize: 30,
+                itemBuilder: (context, _) =>
+                    const Icon(Icons.star, color: Colors.amber),
+                onRatingUpdate: (rating) => minRating = rating,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("Cancel"),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final filtered = await _filterReviews(
+                  toiletId: _selectedToiletId,
+                  searchQuery: searchQuery,
+                  minRating: minRating,
+                );
+                // Update your UI with filtered results
+                Navigator.pop(context);
+              },
+              child: const Text("Apply Filters"),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _showSnackBar(String message, Color color) {
@@ -399,11 +520,11 @@ class _AddCommentPageState extends State<AddCommentPage> {
       }).toList();
     } catch (e) {
       print("Firestore search error: $e");
+      _showSnackBar("Error searching toilets", Colors.red);
       return [];
     }
   }
 
-  // Enhanced toilet search function
   void _searchToilets(String query) async {
     if (query.isEmpty) {
       setState(() {
@@ -413,14 +534,10 @@ class _AddCommentPageState extends State<AddCommentPage> {
       return;
     }
 
-    // Local search in nearby and recent toilets
     List<Map<String, dynamic>> localResults = [];
-
-    // Search nearby
     localResults.addAll(_nearbyToilets.where((toilet) =>
         toilet['name'].toString().toLowerCase().contains(query.toLowerCase())));
 
-    // Search recent (avoid duplicates)
     Set<String> seenIds =
         Set<String>.from(localResults.map((t) => t['id'].toString()));
 
@@ -435,7 +552,6 @@ class _AddCommentPageState extends State<AddCommentPage> {
       }
     }
 
-    // If local results found, use them
     if (localResults.isNotEmpty) {
       setState(() {
         _searchResults = localResults;
@@ -444,26 +560,21 @@ class _AddCommentPageState extends State<AddCommentPage> {
       return;
     }
 
-    // Only search Firestore if no local results
     setState(() {
       _isSearching = true;
+      _searchError = null;
     });
 
     try {
-      // Search in Firestore
       QuerySnapshot snapshot = await FirebaseFirestore.instance
           .collection('toilets')
           .orderBy('name')
-          .startAt([query]).endAt(
-              [query + '\uf8ff']) // Unicode trick for prefix search
-          .get();
+          .startAt([query]).endAt([query + '\uf8ff']).get();
 
       List<Map<String, dynamic>> firestoreResults = [];
 
       for (var doc in snapshot.docs) {
         var data = doc.data() as Map<String, dynamic>;
-
-        // Calculate distance if user location is available
         double? distance;
         if (_userLocation != null &&
             data.containsKey('location') &&
@@ -496,6 +607,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
       setState(() {
         _isSearching = false;
         _searchError = 'Error searching. Please try again.';
+        _showSnackBar(_searchError!, Colors.red);
       });
     }
   }
@@ -509,7 +621,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
             flex: 2,
             child: Text(
               category,
-              style: TextStyle(
+              style: const TextStyle(
                 fontSize: 15,
                 fontWeight: FontWeight.w500,
               ),
@@ -524,7 +636,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
               allowHalfRating: true,
               itemCount: 5,
               itemSize: 28,
-              itemBuilder: (context, _) => Icon(
+              itemBuilder: (context, _) => const Icon(
                 Icons.star,
                 color: Colors.amber,
               ),
@@ -535,10 +647,10 @@ class _AddCommentPageState extends State<AddCommentPage> {
               },
             ),
           ),
-          SizedBox(width: 8),
+          const SizedBox(width: 8),
           Text(
-            _categoryRatings[category]!.toString(),
-            style: TextStyle(
+            _categoryRatings[category]!.toStringAsFixed(1),
+            style: const TextStyle(
               fontWeight: FontWeight.bold,
               fontSize: 16,
             ),
@@ -552,10 +664,18 @@ class _AddCommentPageState extends State<AddCommentPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Write a Review'),
+        title: const Text('Write a Review'),
         elevation: 0,
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
+        actions: [
+          if (_selectedToiletId != null)
+            IconButton(
+              icon: const Icon(Icons.filter_list),
+              onPressed: _showFilterDialog,
+              tooltip: 'Filter reviews',
+            ),
+        ],
       ),
       body: GestureDetector(
         onTap: () {
@@ -572,10 +692,10 @@ class _AddCommentPageState extends State<AddCommentPage> {
                 children: [
                   Container(
                     width: double.infinity,
-                    padding: EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: Colors.blue,
-                      borderRadius: BorderRadius.only(
+                      borderRadius: const BorderRadius.only(
                         bottomLeft: Radius.circular(30),
                         bottomRight: Radius.circular(30),
                       ),
@@ -583,7 +703,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
+                        const Text(
                           "Review & Rate",
                           style: TextStyle(
                             color: Colors.white,
@@ -591,7 +711,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        SizedBox(height: 8),
+                        const SizedBox(height: 8),
                         Text(
                           "Share your experience with others",
                           style: TextStyle(
@@ -607,7 +727,6 @@ class _AddCommentPageState extends State<AddCommentPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Toilet Selection Section
                         Card(
                           elevation: 2,
                           shape: RoundedRectangleBorder(
@@ -618,37 +737,37 @@ class _AddCommentPageState extends State<AddCommentPage> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
+                                const Text(
                                   "Select Toilet",
                                   style: TextStyle(
                                     fontSize: 18,
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
-                                SizedBox(height: 16),
+                                const SizedBox(height: 16),
                                 _selectedToiletName != null
                                     ? ListTile(
                                         contentPadding: EdgeInsets.zero,
                                         leading: Container(
-                                          padding: EdgeInsets.all(10),
+                                          padding: const EdgeInsets.all(10),
                                           decoration: BoxDecoration(
                                             color: Colors.blue.shade50,
                                             borderRadius:
                                                 BorderRadius.circular(10),
                                           ),
-                                          child: Icon(Icons.wc,
+                                          child: const Icon(Icons.wc,
                                               color: Colors.blue),
                                         ),
                                         title: Text(
                                           _selectedToiletName!,
-                                          style: TextStyle(
+                                          style: const TextStyle(
                                             fontWeight: FontWeight.bold,
                                           ),
                                         ),
-                                        subtitle:
-                                            Text("Selected toilet for review"),
+                                        subtitle: const Text(
+                                            "Selected toilet for review"),
                                         trailing: IconButton(
-                                          icon: Icon(Icons.edit,
+                                          icon: const Icon(Icons.edit,
                                               color: Colors.blue),
                                           onPressed: () {
                                             _searchController.clear();
@@ -672,11 +791,13 @@ class _AddCommentPageState extends State<AddCommentPage> {
                                             },
                                             decoration: InputDecoration(
                                               hintText: "Search by toilet name",
-                                              prefixIcon: Icon(Icons.search),
+                                              prefixIcon:
+                                                  const Icon(Icons.search),
                                               suffixIcon: _searchController
                                                       .text.isNotEmpty
                                                   ? IconButton(
-                                                      icon: Icon(Icons.clear,
+                                                      icon: const Icon(
+                                                          Icons.clear,
                                                           color: Colors.grey),
                                                       onPressed: () {
                                                         setState(() {
@@ -696,8 +817,8 @@ class _AddCommentPageState extends State<AddCommentPage> {
                                               ),
                                             ),
                                           ),
-                                          SizedBox(height: 16),
-                                          Text(
+                                          const SizedBox(height: 16),
+                                          const Text(
                                             "Or",
                                             style: TextStyle(
                                               color: Colors.grey,
@@ -705,7 +826,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
                                             ),
                                             textAlign: TextAlign.center,
                                           ),
-                                          SizedBox(height: 16),
+                                          const SizedBox(height: 16),
                                           OutlinedButton.icon(
                                             onPressed: () async {
                                               final result =
@@ -726,10 +847,11 @@ class _AddCommentPageState extends State<AddCommentPage> {
                                                 });
                                               }
                                             },
-                                            icon: Icon(Icons.map),
-                                            label: Text("Find on Map"),
+                                            icon: const Icon(Icons.map),
+                                            label: const Text("Find on Map"),
                                             style: OutlinedButton.styleFrom(
-                                              padding: EdgeInsets.symmetric(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
                                                 horizontal: 24,
                                                 vertical: 12,
                                               ),
@@ -737,7 +859,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
                                                 borderRadius:
                                                     BorderRadius.circular(10),
                                               ),
-                                              side: BorderSide(
+                                              side: const BorderSide(
                                                   color: Colors.green),
                                             ),
                                           ),
@@ -747,9 +869,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
                             ),
                           ),
                         ),
-                        SizedBox(height: 16),
-
-                        // Rating Section
+                        const SizedBox(height: 16),
                         Card(
                           elevation: 2,
                           shape: RoundedRectangleBorder(
@@ -760,45 +880,41 @@ class _AddCommentPageState extends State<AddCommentPage> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
+                                const Text(
                                   "Rate Your Experience",
                                   style: TextStyle(
                                     fontSize: 18,
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
-                                SizedBox(height: 16),
-
-                                // Category ratings
+                                const SizedBox(height: 16),
                                 ..._categoryRatings.keys
                                     .map((category) =>
                                         _buildCategoryRating(category))
                                     .toList(),
-
-                                SizedBox(height: 8),
-                                Divider(),
-                                SizedBox(height: 8),
-
+                                const SizedBox(height: 8),
+                                const Divider(),
+                                const SizedBox(height: 8),
                                 Row(
                                   children: [
-                                    Text(
+                                    const Text(
                                       "Overall Rating:",
                                       style: TextStyle(
                                         fontSize: 16,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
-                                    Spacer(),
+                                    const Spacer(),
                                     Text(
                                       _rating.toStringAsFixed(1),
-                                      style: TextStyle(
+                                      style: const TextStyle(
                                         fontSize: 20,
                                         fontWeight: FontWeight.bold,
                                         color: Colors.blue,
                                       ),
                                     ),
-                                    SizedBox(width: 10),
-                                    Icon(Icons.star,
+                                    const SizedBox(width: 10),
+                                    const Icon(Icons.star,
                                         color: Colors.amber, size: 24),
                                   ],
                                 ),
@@ -806,9 +922,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
                             ),
                           ),
                         ),
-                        SizedBox(height: 16),
-
-                        // Comment Section
+                        const SizedBox(height: 16),
                         Card(
                           elevation: 2,
                           shape: RoundedRectangleBorder(
@@ -819,14 +933,14 @@ class _AddCommentPageState extends State<AddCommentPage> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
+                                const Text(
                                   "Write Your Review",
                                   style: TextStyle(
                                     fontSize: 18,
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
-                                SizedBox(height: 16),
+                                const SizedBox(height: 16),
                                 TextField(
                                   controller: _commentController,
                                   decoration: InputDecoration(
@@ -844,9 +958,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
                             ),
                           ),
                         ),
-                        SizedBox(height: 16),
-
-                        // Photo Section
+                        const SizedBox(height: 16),
                         Card(
                           elevation: 2,
                           shape: RoundedRectangleBorder(
@@ -857,14 +969,14 @@ class _AddCommentPageState extends State<AddCommentPage> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
+                                const Text(
                                   "Add Photo",
                                   style: TextStyle(
                                     fontSize: 18,
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
-                                SizedBox(height: 16),
+                                const SizedBox(height: 16),
                                 _selectedImage != null
                                     ? Stack(
                                         children: [
@@ -888,13 +1000,14 @@ class _AddCommentPageState extends State<AddCommentPage> {
                                                 });
                                               },
                                               child: Container(
-                                                padding: EdgeInsets.all(5),
+                                                padding:
+                                                    const EdgeInsets.all(5),
                                                 decoration: BoxDecoration(
                                                   color: Colors.white
                                                       .withOpacity(0.8),
                                                   shape: BoxShape.circle,
                                                 ),
-                                                child: Icon(
+                                                child: const Icon(
                                                   Icons.close,
                                                   color: Colors.red,
                                                   size: 20,
@@ -922,25 +1035,25 @@ class _AddCommentPageState extends State<AddCommentPage> {
                                             mainAxisAlignment:
                                                 MainAxisAlignment.center,
                                             children: [
-                                              Icon(
+                                              const Icon(
                                                 Icons.add_a_photo,
                                                 size: 48,
                                                 color: Colors.blue,
                                               ),
-                                              SizedBox(height: 8),
-                                              Text("Tap to add a photo"),
+                                              const SizedBox(height: 8),
+                                              const Text("Tap to add a photo"),
                                             ],
                                           ),
                                         ),
                                       ),
-                                SizedBox(height: 10),
+                                const SizedBox(height: 10),
                                 if (_selectedImage == null)
                                   OutlinedButton.icon(
                                     onPressed: _pickImage,
-                                    icon: Icon(Icons.camera_alt),
-                                    label: Text("Upload Photo"),
+                                    icon: const Icon(Icons.camera_alt),
+                                    label: const Text("Upload Photo"),
                                     style: OutlinedButton.styleFrom(
-                                      padding: EdgeInsets.symmetric(
+                                      padding: const EdgeInsets.symmetric(
                                         horizontal: 24,
                                         vertical: 12,
                                       ),
@@ -953,20 +1066,16 @@ class _AddCommentPageState extends State<AddCommentPage> {
                             ),
                           ),
                         ),
-                        SizedBox(height: 100), // Extra space for bottom button
+                        const SizedBox(height: 100),
                       ],
                     ),
                   ),
                 ],
               ),
             ),
-
-            // Toilet search results overlay
-// ... (previous code remains the same until the Stack widget)
-
             if (_showToiletsList && _selectedToiletName == null)
               Positioned(
-                top: 150, // Position below the search field
+                top: 150,
                 left: 16,
                 right: 16,
                 child: Card(
@@ -975,180 +1084,187 @@ class _AddCommentPageState extends State<AddCommentPage> {
                     borderRadius: BorderRadius.circular(15),
                   ),
                   child: Container(
-                    constraints: BoxConstraints(maxHeight: 300),
-                    padding: EdgeInsets.all(8), // Added missing padding
-                    child: ListView(
-                      shrinkWrap: true,
-                      children: [
-                        // Search results
-                        if (_searchResults.isNotEmpty) ...[
-                          Padding(
-                            padding: const EdgeInsets.all(8.0),
-                            child: Text(
-                              "Search Results",
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.blue,
-                              ),
-                            ),
-                          ),
-                          ..._searchResults
-                              .map((toilet) => ListTile(
-                                    leading: CircleAvatar(
-                                      backgroundColor:
-                                          toilet['isNearby'] == true
-                                              ? Colors.blue.withOpacity(0.2)
-                                              : Colors.green.withOpacity(0.2),
-                                      child: Icon(
-                                        Icons.wc,
-                                        color: toilet['isNearby'] == true
-                                            ? Colors.blue
-                                            : Colors.green,
-                                      ),
+                    constraints: const BoxConstraints(maxHeight: 300),
+                    padding: const EdgeInsets.all(8),
+                    child: _isSearching
+                        ? const Center(
+                            child: CircularProgressIndicator(),
+                          )
+                        : ListView(
+                            shrinkWrap: true,
+                            children: [
+                              if (_searchResults.isNotEmpty) ...[
+                                const Padding(
+                                  padding: EdgeInsets.all(8.0),
+                                  child: Text(
+                                    "Search Results",
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.blue,
                                     ),
-                                    title: Text(toilet['name']),
-                                    subtitle: toilet['distance'] != null
-                                        ? Text(
-                                            "${toilet['distance'].toStringAsFixed(1)} km away")
-                                        : toilet['isRecent'] == true
-                                            ? Text("Recently reviewed")
-                                            : null,
-                                    onTap: () {
-                                      setState(() {
-                                        _selectedToiletId = toilet['id'];
-                                        _selectedToiletName = toilet['name'];
-                                        _showToiletsList = false;
-                                      });
-                                    },
-                                  ))
-                              .toList(),
-                        ] else if (_searchController.text.isEmpty) ...[
-                          // Nearby toilets section
-                          if (_nearbyToilets.isNotEmpty) ...[
-                            Padding(
-                              padding: const EdgeInsets.all(8.0),
-                              child: Text(
-                                "Nearby Toilets",
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.blue,
-                                ),
-                              ),
-                            ),
-                            ..._nearbyToilets
-                                .take(5)
-                                .map((toilet) => ListTile(
-                                      leading: CircleAvatar(
-                                        backgroundColor:
-                                            Colors.blue.withOpacity(0.2),
-                                        child:
-                                            Icon(Icons.wc, color: Colors.blue),
-                                      ),
-                                      title: Text(toilet['name']),
-                                      subtitle: Text(
-                                          "${toilet['distance'].toStringAsFixed(1)} km away"),
-                                      onTap: () {
-                                        setState(() {
-                                          _selectedToiletId = toilet['id'];
-                                          _selectedToiletName = toilet['name'];
-                                          _showToiletsList = false;
-                                        });
-                                      },
-                                    ))
-                                .toList(),
-                          ],
-
-                          // Recent toilets section
-                          if (_recentToilets.isNotEmpty) ...[
-                            Padding(
-                              padding: const EdgeInsets.all(8.0),
-                              child: Text(
-                                "Recently Reviewed",
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.green,
-                                ),
-                              ),
-                            ),
-                            ..._recentToilets
-                                .map((toilet) => ListTile(
-                                      leading: CircleAvatar(
-                                        backgroundColor:
-                                            Colors.green.withOpacity(0.2),
-                                        child: Icon(Icons.history,
-                                            color: Colors.green),
-                                      ),
-                                      title: Text(toilet['name']),
-                                      subtitle: Text("Previously reviewed"),
-                                      onTap: () {
-                                        setState(() {
-                                          _selectedToiletId = toilet['id'];
-                                          _selectedToiletName = toilet['name'];
-                                          _showToiletsList = false;
-                                        });
-                                      },
-                                    ))
-                                .toList(),
-                          ],
-
-                          // If both empty, show a message
-                          if (_nearbyToilets.isEmpty && _recentToilets.isEmpty)
-                            Padding(
-                              padding: const EdgeInsets.all(16.0),
-                              child: Center(
-                                child: Column(
-                                  children: [
-                                    Icon(Icons.search_off,
-                                        size: 48, color: Colors.grey),
-                                    SizedBox(height: 8),
-                                    Text(
-                                      "No toilets found nearby. Try searching by name or using the map.",
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(color: Colors.grey[600]),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                        ] else ...[
-                          // No results for search
-                          Padding(
-                            padding: const EdgeInsets.all(16.0),
-                            child: Center(
-                              child: Column(
-                                children: [
-                                  Icon(Icons.search_off,
-                                      size: 48, color: Colors.grey),
-                                  SizedBox(height: 8),
-                                  Text(
-                                    "No toilets found matching '${_searchController.text}'",
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(color: Colors.grey[600]),
                                   ),
+                                ),
+                                ..._searchResults
+                                    .map((toilet) => ListTile(
+                                          leading: CircleAvatar(
+                                            backgroundColor:
+                                                toilet['isNearby'] == true
+                                                    ? Colors.blue
+                                                        .withOpacity(0.2)
+                                                    : Colors.green
+                                                        .withOpacity(0.2),
+                                            child: Icon(
+                                              Icons.wc,
+                                              color: toilet['isNearby'] == true
+                                                  ? Colors.blue
+                                                  : Colors.green,
+                                            ),
+                                          ),
+                                          title: Text(toilet['name']),
+                                          subtitle: toilet['distance'] != null
+                                              ? Text(
+                                                  "${toilet['distance'].toStringAsFixed(1)} km away")
+                                              : toilet['isRecent'] == true
+                                                  ? const Text(
+                                                      "Recently reviewed")
+                                                  : null,
+                                          onTap: () {
+                                            setState(() {
+                                              _selectedToiletId = toilet['id'];
+                                              _selectedToiletName =
+                                                  toilet['name'];
+                                              _showToiletsList = false;
+                                            });
+                                          },
+                                        ))
+                                    .toList(),
+                              ] else if (_searchController.text.isEmpty) ...[
+                                if (_nearbyToilets.isNotEmpty) ...[
+                                  const Padding(
+                                    padding: EdgeInsets.all(8.0),
+                                    child: Text(
+                                      "Nearby Toilets",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.blue,
+                                      ),
+                                    ),
+                                  ),
+                                  ..._nearbyToilets
+                                      .take(5)
+                                      .map((toilet) => ListTile(
+                                            leading: CircleAvatar(
+                                              backgroundColor:
+                                                  Colors.blue.withOpacity(0.2),
+                                              child: const Icon(Icons.wc,
+                                                  color: Colors.blue),
+                                            ),
+                                            title: Text(toilet['name']),
+                                            subtitle: Text(
+                                                "${toilet['distance'].toStringAsFixed(1)} km away"),
+                                            onTap: () {
+                                              setState(() {
+                                                _selectedToiletId =
+                                                    toilet['id'];
+                                                _selectedToiletName =
+                                                    toilet['name'];
+                                                _showToiletsList = false;
+                                              });
+                                            },
+                                          ))
+                                      .toList(),
                                 ],
-                              ),
-                            ),
+                                if (_recentToilets.isNotEmpty) ...[
+                                  const Padding(
+                                    padding: EdgeInsets.all(8.0),
+                                    child: Text(
+                                      "Recently Reviewed",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.green,
+                                      ),
+                                    ),
+                                  ),
+                                  ..._recentToilets
+                                      .map((toilet) => ListTile(
+                                            leading: CircleAvatar(
+                                              backgroundColor:
+                                                  Colors.green.withOpacity(0.2),
+                                              child: const Icon(Icons.history,
+                                                  color: Colors.green),
+                                            ),
+                                            title: Text(toilet['name']),
+                                            subtitle: const Text(
+                                                "Previously reviewed"),
+                                            onTap: () {
+                                              setState(() {
+                                                _selectedToiletId =
+                                                    toilet['id'];
+                                                _selectedToiletName =
+                                                    toilet['name'];
+                                                _showToiletsList = false;
+                                              });
+                                            },
+                                          ))
+                                      .toList(),
+                                ],
+                                if (_nearbyToilets.isEmpty &&
+                                    _recentToilets.isEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.all(16.0),
+                                    child: Center(
+                                      child: Column(
+                                        children: [
+                                          const Icon(Icons.search_off,
+                                              size: 48, color: Colors.grey),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            "No toilets found nearby. Try searching by name or using the map.",
+                                            textAlign: TextAlign.center,
+                                            style: TextStyle(
+                                                color: Colors.grey[600]),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                              ] else ...[
+                                Padding(
+                                  padding: const EdgeInsets.all(16.0),
+                                  child: Center(
+                                    child: Column(
+                                      children: [
+                                        const Icon(Icons.search_off,
+                                            size: 48, color: Colors.grey),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          "No toilets found matching '${_searchController.text}'",
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
+                                              color: Colors.grey[600]),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
-                        ],
-                      ],
-                    ),
                   ),
                 ),
               ),
-
-// ... (rest of the code remains the same)
           ],
         ),
       ),
       bottomNavigationBar: Container(
-        padding: EdgeInsets.all(16),
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: Colors.white,
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity(0.05),
               blurRadius: 5,
-              offset: Offset(0, -2),
+              offset: const Offset(0, -2),
             ),
           ],
         ),
@@ -1168,19 +1284,19 @@ class _AddCommentPageState extends State<AddCommentPage> {
                           strokeWidth: 2,
                         ),
                       ),
-                      SizedBox(width: 10),
-                      Text('Submitting...'),
+                      const SizedBox(width: 10),
+                      const Text('Submitting...'),
                     ],
                   )
-                : Text('Submit Review'),
+                : const Text('Submit Review'),
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.blue,
               foregroundColor: Colors.white,
-              padding: EdgeInsets.symmetric(vertical: 15),
+              padding: const EdgeInsets.symmetric(vertical: 15),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(10),
               ),
-              minimumSize: Size(double.infinity, 0),
+              minimumSize: const Size(double.infinity, 0),
             ),
           ),
         ),

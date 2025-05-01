@@ -5,8 +5,8 @@ import 'package:intl/intl.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'dart:async';
-
 import 'package:photo_view/photo_view.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 class AdminPaymentVerificationScreen extends StatefulWidget {
   @override
@@ -17,6 +17,7 @@ class AdminPaymentVerificationScreen extends StatefulWidget {
 class _AdminPaymentVerificationScreenState
     extends State<AdminPaymentVerificationScreen> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseFunctions _functions = FirebaseFunctions.instance;
   List<Map<String, dynamic>> _pendingPayments = [];
   List<Map<String, dynamic>> _filteredPayments = [];
   bool _isLoading = true;
@@ -28,7 +29,6 @@ class _AdminPaymentVerificationScreenState
     'Rejected'
   ];
 
-  // Search functionality
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
 
@@ -38,7 +38,6 @@ class _AdminPaymentVerificationScreenState
     _loadPendingPayments();
     _ensureNotificationsCollectionExists();
 
-    // Add listener for search
     _searchController.addListener(() {
       setState(() {
         _searchQuery = _searchController.text;
@@ -58,12 +57,10 @@ class _AdminPaymentVerificationScreenState
       _filteredPayments = List.from(_pendingPayments);
     } else {
       _filteredPayments = _pendingPayments.where((payment) {
-        // First apply status filter
         bool matchesStatus = _selectedFilter == 'All' ||
             payment['paymentStatus'].toLowerCase() ==
                 _selectedFilter.toLowerCase();
 
-        // Then apply search text filter
         if (!matchesStatus) return false;
 
         if (_searchQuery.isEmpty) return true;
@@ -81,33 +78,21 @@ class _AdminPaymentVerificationScreenState
     }
   }
 
-  // Helper method to verify if notifications collection exists and create it if needed
   Future<void> _ensureNotificationsCollectionExists() async {
     try {
-      // Check if the notifications collection exists
-      final notificationsCollection =
-          await _firestore.collection('notifications').limit(1).get();
-
-      // If no error was thrown, the collection exists (even if empty)
+      await _firestore.collection('notifications').limit(1).get();
       return;
     } catch (e) {
-      // If an error was thrown, the collection might not exist
-      // Create a dummy document to ensure the collection exists
       await _firestore.collection('notifications').doc('dummy').set({
         'type': 'system',
         'message': 'Notifications collection initialization',
         'createdAt': FieldValue.serverTimestamp(),
         'read': true
       });
-
-      // Then delete the dummy document
       await _firestore.collection('notifications').doc('dummy').delete();
-
-      print('Notifications collection created successfully');
     }
   }
 
-  // Logging helper function for better debugging
   void _logAction(String action, String userId,
       [Map<String, dynamic>? extraData]) {
     final Map<String, dynamic> logData = {
@@ -123,20 +108,33 @@ class _AdminPaymentVerificationScreenState
     });
   }
 
-  // Error handling helper function
+  Future<void> _sendEmailNotification(
+      String userEmail, String subject, String message) async {
+    try {
+      final HttpsCallable callable =
+          _functions.httpsCallable('sendEmailNotification');
+      await callable.call({
+        'email': userEmail,
+        'subject': subject,
+        'message': message,
+        'type': 'payment_verification'
+      });
+    } catch (e) {
+      print('Error sending email notification: $e');
+      _handleError('sending email notification', e);
+    }
+  }
+
   void _handleError(String operation, dynamic error) {
-    // Log error to Firestore
     _firestore.collection('errors').add({
       'operation': operation,
       'error': error.toString(),
       'timestamp': FieldValue.serverTimestamp(),
       'adminId': FirebaseAuth.instance.currentUser?.uid,
     }).catchError((e) {
-      // If we can't even log to Firestore, just print to console
       print('Failed to log error to Firestore: $e');
     });
 
-    // Display error to user
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Error during $operation: ${error.toString()}'),
@@ -145,7 +143,6 @@ class _AdminPaymentVerificationScreenState
         action: SnackBarAction(
           label: 'DETAILS',
           onPressed: () {
-            // Show detailed error dialog
             showDialog(
               context: context,
               builder: (context) => AlertDialog(
@@ -173,7 +170,6 @@ class _AdminPaymentVerificationScreenState
     });
 
     try {
-      // Query Firestore for all user accounts with subscription info
       QuerySnapshot snapshot = await _firestore
           .collection('users')
           .where('role', isEqualTo: 'Owner')
@@ -184,11 +180,16 @@ class _AdminPaymentVerificationScreenState
       for (var doc in snapshot.docs) {
         Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
 
-        // Only include users with subscription data
         if (data.containsKey('subscription')) {
           Map<String, dynamic> subscription = data['subscription'];
 
-          // Add relevant data to our list
+          // Format the creation date for display
+          String formattedDate = 'Unknown date';
+          if (data['createdAt'] != null) {
+            formattedDate = DateFormat('MMM d, yyyy - h:mm a')
+                .format((data['createdAt'] as Timestamp).toDate());
+          }
+
           payments.add({
             'userId': doc.id,
             'name': data['name'] ?? 'Unknown',
@@ -200,12 +201,12 @@ class _AdminPaymentVerificationScreenState
             'paymentProofUrl': subscription['paymentProofUrl'] ?? '',
             'duration': subscription['duration'] ?? '1 month',
             'createdAt': data['createdAt'],
+            'formattedDate': formattedDate,
             'isAccountActive': data['isAccountActive'] ?? false,
           });
         }
       }
 
-      // Sort by creation date, newest first
       payments.sort((a, b) {
         Timestamp timestampA = a['createdAt'] ?? Timestamp.now();
         Timestamp timestampB = b['createdAt'] ?? Timestamp.now();
@@ -214,7 +215,7 @@ class _AdminPaymentVerificationScreenState
 
       setState(() {
         _pendingPayments = payments;
-        _filterPayments(); // Apply existing search filter
+        _filterPayments();
         _isLoading = false;
       });
     } catch (e) {
@@ -222,24 +223,20 @@ class _AdminPaymentVerificationScreenState
       setState(() {
         _isLoading = false;
       });
-
       _handleError('loading payments', e);
     }
   }
 
-  Future<void> _approvePayment(
-      String userId, double price, String planName, String duration) async {
+  Future<void> _approvePayment(String userId, double price, String planName,
+      String duration, String userEmail) async {
     try {
       EasyLoading.show(status: 'Approving payment...');
-
       _logAction('approve_payment_start', userId,
           {'planName': planName, 'price': price, 'duration': duration});
 
-      // Calculate subscription dates
       DateTime now = DateTime.now();
       DateTime endDate = now;
 
-      // Add months based on duration (assuming format like "1 month", "3 months", etc.)
       if (duration.contains('month')) {
         int months = int.tryParse(duration.split(' ')[0]) ?? 1;
         endDate = DateTime(now.year, now.month + months, now.day);
@@ -248,13 +245,9 @@ class _AdminPaymentVerificationScreenState
         endDate = DateTime(now.year + years, now.month, now.day);
       }
 
-      // Create a batch for atomic operations
       WriteBatch batch = _firestore.batch();
-
-      // Reference to user document
       DocumentReference userRef = _firestore.collection('users').doc(userId);
 
-      // Update the user document
       batch.update(userRef, {
         'subscription.paymentStatus': 'approved',
         'subscription.startDate': now,
@@ -262,7 +255,6 @@ class _AdminPaymentVerificationScreenState
         'isAccountActive': true,
       });
 
-      // Create payment history document
       DocumentReference historyRef =
           _firestore.collection('paymentHistory').doc();
       batch.set(historyRef, {
@@ -276,7 +268,6 @@ class _AdminPaymentVerificationScreenState
         'endDate': endDate,
       });
 
-      // Create notification document
       DocumentReference notificationRef =
           _firestore.collection('notifications').doc();
       batch.set(notificationRef, {
@@ -288,7 +279,6 @@ class _AdminPaymentVerificationScreenState
         'read': false
       });
 
-      // Commit all the operations as a single transaction
       await batch.commit();
 
       _logAction('approve_payment_success', userId, {
@@ -297,9 +287,32 @@ class _AdminPaymentVerificationScreenState
         'notificationId': notificationRef.id
       });
 
-      // Refresh the list
-      await _loadPendingPayments();
+      // Enhanced email notification
+      String emailSubject = 'Payment Approved - Subscription Activated';
+      String emailMessage = '''
+Dear Valued Customer,
 
+We are pleased to inform you that your payment for the $planName plan has been successfully approved.
+
+Payment Details:
+- Plan: $planName
+- Amount: \$${price.toStringAsFixed(2)}
+- Duration: $duration
+- Start Date: ${DateFormat('MMM d, yyyy').format(now)}
+- End Date: ${DateFormat('MMM d, yyyy').format(endDate)}
+
+Your account has now been fully activated, and you can access all the features of your subscription. 
+
+If you have any questions or need assistance, please don't hesitate to contact our support team.
+
+Thank you for choosing our service!
+
+Best regards,
+The Support Team
+''';
+
+      await _sendEmailNotification(userEmail, emailSubject, emailMessage);
+      await _loadPendingPayments();
       EasyLoading.dismiss();
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -316,26 +329,26 @@ class _AdminPaymentVerificationScreenState
     }
   }
 
-  Future<void> _rejectPayment(String userId, String reason) async {
+  Future<void> _rejectPayment(
+      String userId, String reason, String userEmail) async {
     try {
       EasyLoading.show(status: 'Rejecting payment...');
-
       _logAction('reject_payment_start', userId, {'reason': reason});
 
-      // Create a batch for atomic operations
       WriteBatch batch = _firestore.batch();
-
-      // Reference to user document
       DocumentReference userRef = _firestore.collection('users').doc(userId);
 
-      // Update the user document
+      DocumentSnapshot userDoc = await userRef.get();
+      final userData = userDoc.data() as Map<String, dynamic>;
+      final planName = userData['subscription']['planName'] ?? 'Unknown Plan';
+      final price = userData['subscription']['price'] ?? 0.0;
+
       batch.update(userRef, {
         'subscription.paymentStatus': 'rejected',
         'subscription.rejectionReason': reason,
         'isAccountActive': false,
       });
 
-      // Create payment history document
       DocumentReference historyRef =
           _firestore.collection('paymentHistory').doc();
       batch.set(historyRef, {
@@ -346,7 +359,6 @@ class _AdminPaymentVerificationScreenState
         'processedBy': FirebaseAuth.instance.currentUser?.uid,
       });
 
-      // Create notification document
       DocumentReference notificationRef =
           _firestore.collection('notifications').doc();
       batch.set(notificationRef, {
@@ -357,15 +369,35 @@ class _AdminPaymentVerificationScreenState
         'read': false
       });
 
-      // Commit all the operations as a single transaction
       await batch.commit();
-
       _logAction('reject_payment_success', userId,
           {'reason': reason, 'notificationId': notificationRef.id});
 
-      // Refresh the list
-      await _loadPendingPayments();
+      // Enhanced rejection email
+      String emailSubject = 'Payment Rejected - Action Required';
+      String emailMessage = '''
+Dear Customer,
 
+We regret to inform you that your payment for the $planName plan (\$${price.toStringAsFixed(2)}) has been rejected.
+
+Reason for rejection: 
+$reason
+
+Next Steps:
+1. Please review the reason for rejection above.
+2. Ensure your payment meets all requirements.
+3. You may submit a new payment through your account dashboard.
+
+If you believe this is an error or need assistance with your payment, please contact our support team immediately.
+
+We apologize for any inconvenience and appreciate your understanding.
+
+Best regards,
+The Support Team
+''';
+
+      await _sendEmailNotification(userEmail, emailSubject, emailMessage);
+      await _loadPendingPayments();
       EasyLoading.dismiss();
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -382,26 +414,24 @@ class _AdminPaymentVerificationScreenState
     }
   }
 
-  // New method to delete payment verification
-  Future<void> _deletePaymentVerification(String userId) async {
+  Future<void> _deletePaymentVerification(
+      String userId, String userEmail, String userName) async {
     try {
       EasyLoading.show(status: 'Deleting payment verification...');
-
       _logAction('delete_payment_verification_start', userId);
 
-      // Create a batch for atomic operations
       WriteBatch batch = _firestore.batch();
-
-      // Reference to user document
       DocumentReference userRef = _firestore.collection('users').doc(userId);
 
-      // Remove the subscription field from the user document
+      DocumentSnapshot userDoc = await userRef.get();
+      final userData = userDoc.data() as Map<String, dynamic>;
+      final planName = userData['subscription']['planName'] ?? 'Unknown Plan';
+
       batch.update(userRef, {
         'subscription': FieldValue.delete(),
         'isAccountActive': false,
       });
 
-      // Create payment history document for deletion
       DocumentReference historyRef =
           _firestore.collection('paymentHistory').doc();
       batch.set(historyRef, {
@@ -412,7 +442,6 @@ class _AdminPaymentVerificationScreenState
         'notes': 'Payment verification deleted by admin'
       });
 
-      // Create notification document
       DocumentReference notificationRef =
           _firestore.collection('notifications').doc();
       batch.set(notificationRef, {
@@ -423,15 +452,29 @@ class _AdminPaymentVerificationScreenState
         'read': false
       });
 
-      // Commit all the operations as a single transaction
       await batch.commit();
-
       _logAction('delete_payment_verification_success', userId,
           {'notificationId': notificationRef.id});
 
-      // Refresh the list
-      await _loadPendingPayments();
+      String emailSubject = 'Payment Verification Deleted';
+      String emailMessage = '''Dear $userName,
 
+This is to inform you that your payment verification for the $planName plan has been deleted by an administrator.
+
+Action Required:
+- If you wish to continue using our services, please submit a new payment through your account dashboard.
+- Ensure all payment details are correct before submission.
+
+For any questions or concerns regarding this action, please contact our support team.
+
+We appreciate your understanding.
+
+Best regards,
+The Support Team
+''';
+
+      await _sendEmailNotification(userEmail, emailSubject, emailMessage);
+      await _loadPendingPayments();
       EasyLoading.dismiss();
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -448,7 +491,7 @@ class _AdminPaymentVerificationScreenState
     }
   }
 
-  void _showRejectDialog(String userId) {
+  void _showRejectDialog(String userId, String userEmail) {
     final TextEditingController reasonController = TextEditingController();
 
     showDialog(
@@ -466,6 +509,7 @@ class _AdminPaymentVerificationScreenState
                 decoration: InputDecoration(
                   labelText: 'Reason',
                   border: OutlineInputBorder(),
+                  hintText: 'E.g., Unclear payment slip, Wrong amount, etc.',
                 ),
                 maxLines: 3,
               ),
@@ -488,7 +532,7 @@ class _AdminPaymentVerificationScreenState
                   return;
                 }
                 Navigator.pop(context);
-                _rejectPayment(userId, reasonController.text.trim());
+                _rejectPayment(userId, reasonController.text.trim(), userEmail);
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.red,
@@ -501,8 +545,8 @@ class _AdminPaymentVerificationScreenState
     );
   }
 
-  // Show delete confirmation dialog
-  void _showDeleteConfirmationDialog(String userId, String userName) {
+  void _showDeleteConfirmationDialog(
+      String userId, String userName, String userEmail) {
     showDialog(
       context: context,
       builder: (BuildContext context) {
@@ -518,7 +562,7 @@ class _AdminPaymentVerificationScreenState
             ElevatedButton(
               onPressed: () {
                 Navigator.pop(context);
-                _deletePaymentVerification(userId);
+                _deletePaymentVerification(userId, userEmail, userName);
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.red,
@@ -531,10 +575,8 @@ class _AdminPaymentVerificationScreenState
     );
   }
 
-  // Improved _showPaymentProof method for better image handling
   void _showPaymentProof(
       String imageUrl, String userName, String planName, double price) {
-    // First, check if the URL is valid
     if (imageUrl.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -545,23 +587,17 @@ class _AdminPaymentVerificationScreenState
       return;
     }
 
-    print('Attempting to load image from URL: $imageUrl');
-
-    // Add loading indicator before showing the dialog
     EasyLoading.show(status: 'Loading payment slip...');
 
-    // First try to download the image to check if it exists and is accessible
     CachedNetworkImageProvider(imageUrl)
         .resolve(ImageConfiguration())
         .addListener(
           ImageStreamListener(
             (info, _) {
-              // Image loaded successfully, show the dialog
               EasyLoading.dismiss();
               _showPaymentProofDialog(imageUrl, userName, planName, price);
             },
             onError: (exception, stackTrace) {
-              // Handle error case
               EasyLoading.dismiss();
               _handleError('loading payment slip', exception);
             },
@@ -569,12 +605,11 @@ class _AdminPaymentVerificationScreenState
         );
   }
 
-  // Extracted dialog to separate method
   void _showPaymentProofDialog(
       String imageUrl, String userName, String planName, double price) {
     showDialog(
       context: context,
-      barrierDismissible: false, // Prevent dismissing by tapping outside
+      barrierDismissible: false,
       builder: (BuildContext context) {
         return Dialog(
           insetPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 24),
@@ -598,22 +633,9 @@ class _AdminPaymentVerificationScreenState
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    Row(
-                      children: [
-                        // Edit button
-                        IconButton(
-                          icon: Icon(Icons.edit, color: Colors.blue),
-                          tooltip: 'Edit receipt details',
-                          onPressed: () {
-                            Navigator.pop(context);
-                            _showEditPaymentDialog(userName, planName, price);
-                          },
-                        ),
-                        IconButton(
-                          icon: Icon(Icons.close),
-                          onPressed: () => Navigator.pop(context),
-                        ),
-                      ],
+                    IconButton(
+                      icon: Icon(Icons.close),
+                      onPressed: () => Navigator.pop(context),
                     ),
                   ],
                 ),
@@ -648,7 +670,6 @@ class _AdminPaymentVerificationScreenState
                       child: PhotoView(
                         imageProvider: CachedNetworkImageProvider(
                           imageUrl,
-                          // Add more configuration parameters for caching
                           maxHeight: 1000,
                           maxWidth: 1000,
                         ),
@@ -727,293 +748,65 @@ class _AdminPaymentVerificationScreenState
                     ),
                   ),
                 ),
+                SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    ElevatedButton.icon(
+                      icon: Icon(Icons.check, size: 18),
+                      label: Text('Approve'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                      ),
+                      onPressed: () {
+                        Navigator.pop(context);
+                        // Find the payment in our list
+                        final payment = _pendingPayments.firstWhere(
+                          (p) =>
+                              p['name'] == userName &&
+                              p['planName'] == planName,
+                          orElse: () => {},
+                        );
+                        if (payment.isNotEmpty) {
+                          _approvePayment(
+                            payment['userId'],
+                            payment['planPrice'],
+                            payment['planName'],
+                            payment['duration'],
+                            payment['email'],
+                          );
+                        }
+                      },
+                    ),
+                    ElevatedButton.icon(
+                      icon: Icon(Icons.close, size: 18),
+                      label: Text('Reject'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red,
+                      ),
+                      onPressed: () {
+                        Navigator.pop(context);
+                        // Find the payment in our list
+                        final payment = _pendingPayments.firstWhere(
+                          (p) =>
+                              p['name'] == userName &&
+                              p['planName'] == planName,
+                          orElse: () => {},
+                        );
+                        if (payment.isNotEmpty) {
+                          _showRejectDialog(
+                              payment['userId'], payment['email']);
+                        }
+                      },
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
         );
       },
     );
-  }
-
-  // New method to change payment status (Approved → Rejected or Rejected → Approved)
-  Future<void> _changePaymentStatus(String userId, String currentStatus,
-      String planName, double price, String duration) async {
-    if (currentStatus == 'approved') {
-      // If currently approved, show reject dialog
-      _showRejectDialog(userId);
-    } else if (currentStatus == 'rejected') {
-      // If currently rejected, approve it
-      _approvePayment(userId, price, planName, duration);
-    }
-  }
-
-  Future<void> _saveEditedPaymentDetails(
-      String userId, String planName, double price) async {
-    try {
-      EasyLoading.show(status: 'Updating payment details...');
-
-      _logAction('edit_payment_details_start', userId,
-          {'planName': planName, 'price': price});
-
-      // Create a batch for atomic operations
-      WriteBatch batch = _firestore.batch();
-
-      // Reference to user document
-      DocumentReference userRef = _firestore.collection('users').doc(userId);
-
-      // Update the user document with new plan details
-      batch.update(userRef, {
-        'subscription.planName': planName,
-        'subscription.price': price,
-        'subscription.lastUpdated': FieldValue.serverTimestamp(),
-        'subscription.updatedBy': FirebaseAuth.instance.currentUser?.uid,
-      });
-
-      // Create payment history document
-      DocumentReference historyRef =
-          _firestore.collection('paymentHistory').doc();
-      batch.set(historyRef, {
-        'userId': userId,
-        'action': 'details_updated',
-        'planName': planName,
-        'price': price,
-        'processedAt': FieldValue.serverTimestamp(),
-        'processedBy': FirebaseAuth.instance.currentUser?.uid,
-        'notes': 'Payment details updated by admin'
-      });
-
-      // Create notification document
-      DocumentReference notificationRef =
-          _firestore.collection('notifications').doc();
-      batch.set(notificationRef, {
-        'userId': userId,
-        'type': 'payment_details_updated',
-        'message':
-            'Your payment details have been updated. New plan: $planName, price: ${NumberFormat.currency(symbol: '\$').format(price)}.',
-        'createdAt': FieldValue.serverTimestamp(),
-        'read': false
-      });
-
-      // Commit all the operations as a single transaction
-      await batch.commit();
-
-      _logAction('edit_payment_details_success', userId, {
-        'planName': planName,
-        'price': price,
-        'notificationId': notificationRef.id
-      });
-
-      // Refresh the list
-      await _loadPendingPayments();
-
-      EasyLoading.dismiss();
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Payment details updated successfully'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } catch (e) {
-      EasyLoading.dismiss();
-      _logAction('edit_payment_details_error', userId,
-          {'error': e.toString(), 'planName': planName, 'price': price});
-      _handleError('updating payment details', e);
-    }
-  }
-
-  void _showEditPaymentDialog(String userName, String planName, double price) {
-    final TextEditingController planController =
-        TextEditingController(text: planName);
-    final TextEditingController priceController =
-        TextEditingController(text: price.toString());
-
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('Edit Payment Details'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('User: $userName',
-                  style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 16),
-              TextField(
-                controller: planController,
-                decoration: InputDecoration(
-                  labelText: 'Plan Name',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              SizedBox(height: 16),
-              TextField(
-                controller: priceController,
-                keyboardType: TextInputType.numberWithOptions(decimal: true),
-                decoration: InputDecoration(
-                  labelText: 'Price',
-                  border: OutlineInputBorder(),
-                  prefixText: '\$',
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                // Implement saving the edited details
-                final String newPlan = planController.text.trim();
-                final double newPrice =
-                    double.tryParse(priceController.text) ?? price;
-
-                if (newPlan.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Plan name cannot be empty')),
-                  );
-                  return;
-                }
-
-                Navigator.pop(context);
-
-                // Find the userId for this user
-                final matchingPayments = _pendingPayments
-                    .where((payment) =>
-                        payment['name'] == userName &&
-                        payment['planName'] == planName &&
-                        payment['planPrice'] == price)
-                    .toList();
-
-                if (matchingPayments.isNotEmpty) {
-                  _saveEditedPaymentDetails(
-                      matchingPayments.first['userId'], newPlan, newPrice);
-                } else {
-                  _handleError('finding user payment record',
-                      'Could not find user payment record for $userName with plan $planName');
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
-              ),
-              child: Text('Save Changes'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  // Method to show status change dialog
-  void _showStatusChangeDialog(Map<String, dynamic> payment) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('Change Payment Status'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('User: ${payment['name']}'),
-              SizedBox(height: 8),
-              Text('Current Status: ${payment['paymentStatus'].toUpperCase()}'),
-              SizedBox(height: 16),
-              Text('Are you sure you want to change the payment status?'),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _changePaymentStatus(
-                  payment['userId'],
-                  payment['paymentStatus'],
-                  payment['planName'],
-                  payment['planPrice'],
-                  payment['duration'],
-                );
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: payment['paymentStatus'] == 'approved'
-                    ? Colors.red
-                    : Colors.green,
-              ),
-              child: Text(payment['paymentStatus'] == 'approved'
-                  ? 'Change to Rejected'
-                  : 'Change to Approved'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  // Method to check notification status
-  Future<void> _checkNotificationStatus() async {
-    try {
-      EasyLoading.show(status: 'Checking notifications...');
-
-      QuerySnapshot snapshot = await _firestore
-          .collection('notifications')
-          .orderBy('createdAt', descending: true)
-          .limit(20)
-          .get();
-
-      List<Map<String, dynamic>> recentNotifications = snapshot.docs
-          .map((doc) => {
-                'id': doc.id,
-                ...doc.data() as Map<String, dynamic>,
-              })
-          .toList();
-
-      EasyLoading.dismiss();
-
-      // Show recent notifications in a dialog
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text('Recent Notifications'),
-          content: Container(
-            width: double.maxFinite,
-            height: 300,
-            child: ListView.builder(
-              itemCount: recentNotifications.length,
-              itemBuilder: (context, index) {
-                final notification = recentNotifications[index];
-                final DateTime? createdAt = notification['createdAt'] != null
-                    ? (notification['createdAt'] as Timestamp).toDate()
-                    : null;
-                return ListTile(
-                  title: Text(notification['message'] ?? 'No message'),
-                  subtitle: Text(
-                      'User ID: ${notification['userId'] ?? 'Unknown'}\n'
-                      'Type: ${notification['type'] ?? 'Unknown'}\n'
-                      'Date: ${createdAt != null ? DateFormat('MMM d, yyyy • h:mm a').format(createdAt) : 'Unknown'}'),
-                  trailing: notification['read'] == true
-                      ? Icon(Icons.check_circle, color: Colors.green)
-                      : Icon(Icons.circle, color: Colors.red),
-                );
-              },
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('CLOSE'),
-            ),
-          ],
-        ),
-      );
-    } catch (e) {
-      EasyLoading.dismiss();
-      _handleError('checking notifications', e);
-    }
   }
 
   @override
@@ -1024,7 +817,6 @@ class _AdminPaymentVerificationScreenState
         backgroundColor: Color(0xFF2E86DE),
         elevation: 0,
         actions: [
-          // Add notification check button
           IconButton(
             icon: Icon(Icons.notifications),
             tooltip: 'Check notifications',
@@ -1039,13 +831,11 @@ class _AdminPaymentVerificationScreenState
       ),
       body: Column(
         children: [
-          // Search & Filter Container
           Container(
             padding: EdgeInsets.all(16),
             color: Color(0xFF2E86DE).withOpacity(0.1),
             child: Column(
               children: [
-                // Search bar
                 TextField(
                   controller: _searchController,
                   decoration: InputDecoration(
@@ -1061,8 +851,6 @@ class _AdminPaymentVerificationScreenState
                   ),
                 ),
                 SizedBox(height: 12),
-
-                // Filter dropdown
                 Row(
                   children: [
                     Text(
@@ -1109,8 +897,6 @@ class _AdminPaymentVerificationScreenState
               ],
             ),
           ),
-
-          // Stats summary
           Container(
             padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16),
             color: Colors.grey[100],
@@ -1144,8 +930,6 @@ class _AdminPaymentVerificationScreenState
               ],
             ),
           ),
-
-          // Payment list
           Expanded(
             child: _isLoading
                 ? Center(child: CircularProgressIndicator())
@@ -1215,14 +999,6 @@ class _AdminPaymentVerificationScreenState
         statusIcon = Icons.pending;
     }
 
-    // Format timestamp
-    String dateString = 'Unknown date';
-    if (payment['createdAt'] != null) {
-      Timestamp timestamp = payment['createdAt'];
-      DateTime dateTime = timestamp.toDate();
-      dateString = DateFormat('MMM d, yyyy • h:mm a').format(dateTime);
-    }
-
     return Card(
       margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       elevation: 2,
@@ -1260,7 +1036,7 @@ class _AdminPaymentVerificationScreenState
                 Text(payment['email']),
                 SizedBox(height: 4),
                 Text(
-                  'Submitted: $dateString',
+                  'Submitted: ${payment['formattedDate']}',
                   style: TextStyle(
                     fontSize: 12,
                     color: Colors.grey[600],
@@ -1268,40 +1044,120 @@ class _AdminPaymentVerificationScreenState
                 ),
               ],
             ),
-            trailing: GestureDetector(
-              onTap: () {
-                // Only allow changing approved or rejected statuses
-                if (payment['paymentStatus'] != 'pending') {
-                  _showStatusChangeDialog(payment);
-                }
-              },
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    statusIcon,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  statusIcon,
+                  color: statusColor,
+                ),
+                SizedBox(width: 8),
+                Text(
+                  payment['paymentStatus'].toUpperCase(),
+                  style: TextStyle(
                     color: statusColor,
+                    fontWeight: FontWeight.bold,
                   ),
-                  SizedBox(width: 8),
-                  Text(
-                    payment['paymentStatus'].toUpperCase(),
-                    style: TextStyle(
-                      color: statusColor,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  // Add edit icon for non-pending payments
-                  if (payment['paymentStatus'] != 'pending')
-                    Icon(
-                      Icons.edit,
-                      size: 16,
-                      color: Colors.grey[600],
-                    ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
           Divider(height: 1),
+          if (payment['paymentProofUrl'] != null &&
+              payment['paymentProofUrl'].isNotEmpty)
+            Container(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              width: double.infinity,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Payment Slip:',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      fontSize: 14,
+                      color: Colors.grey[700],
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Container(
+                    height: 160,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey[300]!),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Container(color: Colors.grey[200]),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(7),
+                          child: CachedNetworkImage(
+                            imageUrl: payment['paymentProofUrl'],
+                            fit: BoxFit.cover,
+                            placeholder: (context, url) => Center(
+                              child: CircularProgressIndicator(
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                    Color(0xFF2E86DE)),
+                              ),
+                            ),
+                            errorWidget: (context, url, error) {
+                              return Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.broken_image,
+                                        color: Colors.red, size: 32),
+                                    SizedBox(height: 8),
+                                    Padding(
+                                      padding:
+                                          EdgeInsets.symmetric(horizontal: 8),
+                                      child: Text(
+                                        'Could not load payment slip',
+                                        textAlign: TextAlign.center,
+                                        style:
+                                            TextStyle(color: Colors.red[700]),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(7),
+                            onTap: () => _showPaymentProof(
+                              payment['paymentProofUrl'],
+                              payment['name'],
+                              payment['planName'],
+                              payment['planPrice'],
+                            ),
+                            child: Center(
+                              child: Container(
+                                padding: EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withOpacity(0.5),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(
+                                  Icons.zoom_in,
+                                  color: Colors.white,
+                                  size: 24,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Padding(
             padding: EdgeInsets.all(16),
             child: Column(
@@ -1330,8 +1186,6 @@ class _AdminPaymentVerificationScreenState
                 SizedBox(height: 8),
                 Text('Payment Method: ${payment['paymentMethod']}'),
                 SizedBox(height: 16),
-
-                // Show payment proof button if URL exists
                 if (payment['paymentProofUrl'] != null &&
                     payment['paymentProofUrl'].isNotEmpty)
                   Container(
@@ -1352,8 +1206,6 @@ class _AdminPaymentVerificationScreenState
                       ),
                     ),
                   ),
-
-                // Action buttons for pending payments
                 if (payment['paymentStatus'] == 'pending')
                   Padding(
                     padding: const EdgeInsets.only(top: 16),
@@ -1366,6 +1218,7 @@ class _AdminPaymentVerificationScreenState
                               payment['planPrice'],
                               payment['planName'],
                               payment['duration'],
+                              payment['email'],
                             ),
                             icon: Icon(Icons.check),
                             label: Text('Approve'),
@@ -1378,8 +1231,8 @@ class _AdminPaymentVerificationScreenState
                         SizedBox(width: 12),
                         Expanded(
                           child: OutlinedButton.icon(
-                            onPressed: () =>
-                                _showRejectDialog(payment['userId']),
+                            onPressed: () => _showRejectDialog(
+                                payment['userId'], payment['email']),
                             icon: Icon(Icons.close, color: Colors.red),
                             label: Text(
                               'Reject',
@@ -1394,8 +1247,6 @@ class _AdminPaymentVerificationScreenState
                       ],
                     ),
                   ),
-
-                // Action buttons for non-pending payments
                 if (payment['paymentStatus'] != 'pending')
                   Padding(
                     padding: const EdgeInsets.only(top: 16),
@@ -1404,16 +1255,21 @@ class _AdminPaymentVerificationScreenState
                         Row(
                           children: [
                             Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: () =>
-                                    _showStatusChangeDialog(payment),
-                                icon: payment['paymentStatus'] == 'approved'
-                                    ? Icon(Icons.cancel)
-                                    : Icon(Icons.check_circle),
-                                label: Text(
-                                    payment['paymentStatus'] == 'approved'
-                                        ? 'Change to Rejected'
-                                        : 'Change to Approved'),
+                              child: ElevatedButton(
+                                onPressed: () {
+                                  if (payment['paymentStatus'] == 'approved') {
+                                    _showRejectDialog(
+                                        payment['userId'], payment['email']);
+                                  } else {
+                                    _approvePayment(
+                                      payment['userId'],
+                                      payment['planPrice'],
+                                      payment['planName'],
+                                      payment['duration'],
+                                      payment['email'],
+                                    );
+                                  }
+                                },
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor:
                                       payment['paymentStatus'] == 'approved'
@@ -1421,6 +1277,10 @@ class _AdminPaymentVerificationScreenState
                                           : Colors.green,
                                   padding: EdgeInsets.symmetric(vertical: 12),
                                 ),
+                                child: Text(
+                                    payment['paymentStatus'] == 'approved'
+                                        ? 'Change to Rejected'
+                                        : 'Change to Approved'),
                               ),
                             ),
                           ],
@@ -1428,7 +1288,9 @@ class _AdminPaymentVerificationScreenState
                         SizedBox(height: 12),
                         OutlinedButton.icon(
                           onPressed: () => _showDeleteConfirmationDialog(
-                              payment['userId'], payment['name']),
+                              payment['userId'],
+                              payment['name'],
+                              payment['email']),
                           icon: Icon(Icons.delete, color: Colors.red),
                           label: Text(
                             'Delete Verification',
@@ -1448,5 +1310,64 @@ class _AdminPaymentVerificationScreenState
         ],
       ),
     );
+  }
+
+  Future<void> _checkNotificationStatus() async {
+    try {
+      EasyLoading.show(status: 'Checking notifications...');
+      QuerySnapshot snapshot = await _firestore
+          .collection('notifications')
+          .orderBy('createdAt', descending: true)
+          .limit(20)
+          .get();
+
+      List<Map<String, dynamic>> recentNotifications = snapshot.docs
+          .map((doc) => {
+                'id': doc.id,
+                ...doc.data() as Map<String, dynamic>,
+              })
+          .toList();
+
+      EasyLoading.dismiss();
+
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('Recent Notifications'),
+          content: Container(
+            width: double.maxFinite,
+            height: 300,
+            child: ListView.builder(
+              itemCount: recentNotifications.length,
+              itemBuilder: (context, index) {
+                final notification = recentNotifications[index];
+                final DateTime? createdAt = notification['createdAt'] != null
+                    ? (notification['createdAt'] as Timestamp).toDate()
+                    : null;
+                return ListTile(
+                  title: Text(notification['message'] ?? 'No message'),
+                  subtitle: Text(
+                      'User ID: ${notification['userId'] ?? 'Unknown'}\n'
+                      'Type: ${notification['type'] ?? 'Unknown'}\n'
+                      'Date: ${createdAt != null ? DateFormat('MMM d, yyyy • h:mm a').format(createdAt) : 'Unknown'}'),
+                  trailing: notification['read'] == true
+                      ? Icon(Icons.check_circle, color: Colors.green)
+                      : Icon(Icons.circle, color: Colors.red),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('CLOSE'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      EasyLoading.dismiss();
+      _handleError('checking notifications', e);
+    }
   }
 }
