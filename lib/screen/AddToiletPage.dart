@@ -3,6 +3,9 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'dart:io';
 
 class AddToiletPage extends StatefulWidget {
   final bool isEditing;
@@ -24,9 +27,13 @@ class _AddToiletPageState extends State<AddToiletPage> {
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _toiletNameController = TextEditingController();
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final ImagePicker _imagePicker = ImagePicker();
 
   LatLng? _selectedLocation;
   bool _isSubmitting = false;
+  List<File> _selectedImages = [];
+  List<String> _existingImageUrls = [];
+  bool _isUploading = false;
 
   final List<Map<String, dynamic>> amenities = [
     {"name": "Accessible", "icon": Icons.accessible, "color": Colors.blue},
@@ -82,6 +89,40 @@ class _AddToiletPageState extends State<AddToiletPage> {
           );
         });
       }
+    }
+
+    // Load existing images
+    if (data['imageUrls'] != null && data['imageUrls'] is List) {
+      setState(() {
+        _existingImageUrls = List<String>.from(data['imageUrls']);
+      });
+    }
+
+    // If we're editing and there are no image URLs in the data, fetch the document to check again
+    if (widget.isEditing &&
+        widget.toiletId != null &&
+        _existingImageUrls.isEmpty) {
+      _fetchToiletDataFromFirestore();
+    }
+  }
+
+  Future<void> _fetchToiletDataFromFirestore() async {
+    try {
+      final docSnapshot = await FirebaseFirestore.instance
+          .collection('toilets')
+          .doc(widget.toiletId)
+          .get();
+
+      if (docSnapshot.exists) {
+        final data = docSnapshot.data() as Map<String, dynamic>;
+        if (data['imageUrls'] != null && data['imageUrls'] is List) {
+          setState(() {
+            _existingImageUrls = List<String>.from(data['imageUrls']);
+          });
+        }
+      }
+    } catch (e) {
+      print('Error fetching toilet data: $e');
     }
   }
 
@@ -172,6 +213,103 @@ class _AddToiletPageState extends State<AddToiletPage> {
     }
   }
 
+  Future<void> _pickImages() async {
+    try {
+      final List<XFile> pickedFiles = await _imagePicker.pickMultiImage(
+        imageQuality: 85, // Compress images to reduce storage usage
+        maxWidth: 1200, // Limit max width
+      );
+
+      if (pickedFiles.isNotEmpty) {
+        setState(() {
+          for (var pickedFile in pickedFiles) {
+            _selectedImages.add(File(pickedFile.path));
+          }
+        });
+      }
+    } catch (e) {
+      _showSnackBar('Error picking images: $e', Colors.red, Icons.error);
+    }
+  }
+
+  Future<void> _takePhoto() async {
+    try {
+      final XFile? pickedFile = await _imagePicker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 85,
+        maxWidth: 1200,
+      );
+
+      if (pickedFile != null) {
+        setState(() {
+          _selectedImages.add(File(pickedFile.path));
+        });
+      }
+    } catch (e) {
+      _showSnackBar('Error taking photo: $e', Colors.red, Icons.error);
+    }
+  }
+
+  void _removeImage(int index) {
+    setState(() {
+      _selectedImages.removeAt(index);
+    });
+  }
+
+  void _removeExistingImage(int index) {
+    setState(() {
+      _existingImageUrls.removeAt(index);
+    });
+  }
+
+  Future<List<String>> _uploadImages() async {
+    List<String> uploadedUrls = [];
+
+    if (_selectedImages.isEmpty) return uploadedUrls;
+
+    setState(() {
+      _isUploading = true;
+    });
+
+    try {
+      final user = _auth.currentUser;
+      if (user == null && !widget.isEditing) {
+        throw Exception('User must be logged in to upload images');
+      }
+
+      for (var imageFile in _selectedImages) {
+        // Create unique filename with timestamp and random suffix
+        String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+        String fileName =
+            'toilet_${widget.toiletId ?? timestamp}_${timestamp}_${uploadedUrls.length}.jpg';
+
+        // Reference to storage location
+        Reference ref = FirebaseStorage.instance
+            .ref()
+            .child('toilet_images')
+            .child(fileName);
+
+        // Upload file
+        UploadTask uploadTask = ref.putFile(imageFile);
+
+        // Wait for upload to complete and get download URL
+        TaskSnapshot taskSnapshot = await uploadTask;
+        String downloadUrl = await taskSnapshot.ref.getDownloadURL();
+
+        uploadedUrls.add(downloadUrl);
+      }
+
+      return uploadedUrls;
+    } catch (e) {
+      _showSnackBar('Error uploading images: $e', Colors.red, Icons.error);
+      return [];
+    } finally {
+      setState(() {
+        _isUploading = false;
+      });
+    }
+  }
+
   void _showSnackBar(String message, Color color, IconData icon) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -212,6 +350,15 @@ class _AddToiletPageState extends State<AddToiletPage> {
       }
 
       try {
+        // Upload images first and get URLs
+        List<String> uploadedImageUrls = await _uploadImages();
+
+        // Combine existing images (that weren't removed) with new uploaded images
+        List<String> allImageUrls = [
+          ..._existingImageUrls,
+          ...uploadedImageUrls
+        ];
+
         // Data to save
         final toiletData = {
           'name': toiletName,
@@ -220,6 +367,7 @@ class _AddToiletPageState extends State<AddToiletPage> {
             'latitude': _selectedLocation!.latitude,
             'longitude': _selectedLocation!.longitude,
           },
+          'imageUrls': allImageUrls,
         };
 
         // If creating new toilet (not editing)
@@ -246,6 +394,8 @@ class _AddToiletPageState extends State<AddToiletPage> {
           setState(() {
             _selectedLocation = null;
             selectedAmenities.clear();
+            _selectedImages.clear();
+            _existingImageUrls.clear();
           });
         }
         // If editing existing toilet
@@ -280,6 +430,235 @@ class _AddToiletPageState extends State<AddToiletPage> {
     }
   }
 
+  Widget _buildImageGrid() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Photos',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        SizedBox(height: 12),
+
+        // Show existing images (when editing)
+        if (_existingImageUrls.isNotEmpty) ...[
+          Text(
+            'Existing Photos',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+              color: Colors.grey[700],
+            ),
+          ),
+          SizedBox(height: 8),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: NeverScrollableScrollPhysics(),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              crossAxisSpacing: 8,
+              mainAxisSpacing: 8,
+              childAspectRatio: 1,
+            ),
+            itemCount: _existingImageUrls.length,
+            itemBuilder: (context, index) {
+              return Stack(
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.network(
+                        _existingImageUrls[index],
+                        fit: BoxFit.cover,
+                        width: double.infinity,
+                        height: double.infinity,
+                        loadingBuilder: (context, child, loadingProgress) {
+                          if (loadingProgress == null) return child;
+                          return Center(
+                            child: CircularProgressIndicator(
+                              value: loadingProgress.expectedTotalBytes != null
+                                  ? loadingProgress.cumulativeBytesLoaded /
+                                      loadingProgress.expectedTotalBytes!
+                                  : null,
+                            ),
+                          );
+                        },
+                        errorBuilder: (context, error, stackTrace) {
+                          return Container(
+                            color: Colors.grey[200],
+                            child: Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.broken_image,
+                                    size: 30,
+                                    color: Colors.grey[400],
+                                  ),
+                                  SizedBox(height: 4),
+                                  Text(
+                                    'Load error',
+                                    style: TextStyle(
+                                        fontSize: 10, color: Colors.grey[500]),
+                                  )
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: GestureDetector(
+                      onTap: () => _removeExistingImage(index),
+                      child: Container(
+                        padding: EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.7),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.close,
+                          size: 16,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          SizedBox(height: 16),
+        ],
+
+        // Show newly selected images
+        if (_selectedImages.isNotEmpty) ...[
+          Text(
+            'New Photos',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+              color: Colors.grey[700],
+            ),
+          ),
+          SizedBox(height: 8),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: NeverScrollableScrollPhysics(),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              crossAxisSpacing: 8,
+              mainAxisSpacing: 8,
+              childAspectRatio: 1,
+            ),
+            itemCount: _selectedImages.length,
+            itemBuilder: (context, index) {
+              return Stack(
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.file(
+                        _selectedImages[index],
+                        fit: BoxFit.cover,
+                        width: double.infinity,
+                        height: double.infinity,
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: GestureDetector(
+                      onTap: () => _removeImage(index),
+                      child: Container(
+                        padding: EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.7),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.close,
+                          size: 16,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          SizedBox(height: 16),
+        ],
+
+        // Photo action buttons
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _pickImages,
+                icon: Icon(Icons.photo_library),
+                label: Text('Gallery'),
+                style: OutlinedButton.styleFrom(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _takePhoto,
+                icon: Icon(Icons.camera_alt),
+                label: Text('Camera'),
+                style: OutlinedButton.styleFrom(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+          ],
+        ),
+
+        if (_isUploading)
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 12),
+                Text(
+                  'Uploading images...',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey[700],
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -296,7 +675,8 @@ class _AddToiletPageState extends State<AddToiletPage> {
               children: [
                 GoogleMap(
                   initialCameraPosition: CameraPosition(
-                    target: _selectedLocation ?? LatLng(7.8731, 80.7718),
+                    target: _selectedLocation ??
+                        LatLng(7.8731, 80.7718), // Default to Sri Lanka
                     zoom: 12,
                   ),
                   onTap: _selectLocation,
@@ -357,7 +737,7 @@ class _AddToiletPageState extends State<AddToiletPage> {
 
           // Form takes up bottom half
           Expanded(
-            flex: 5,
+            flex: 6, // Increased flex to accommodate photo section
             child: Container(
               decoration: BoxDecoration(
                 color: Colors.white,
@@ -422,6 +802,10 @@ class _AddToiletPageState extends State<AddToiletPage> {
                           return null;
                         },
                       ),
+                      SizedBox(height: 16),
+
+                      // Photo upload section
+                      _buildImageGrid(),
                       SizedBox(height: 16),
 
                       // Amenities section
@@ -499,8 +883,10 @@ class _AddToiletPageState extends State<AddToiletPage> {
 
                       // Submit button
                       ElevatedButton(
-                        onPressed: _isSubmitting ? null : _submitForm,
-                        child: _isSubmitting
+                        onPressed: (_isSubmitting || _isUploading)
+                            ? null
+                            : _submitForm,
+                        child: (_isSubmitting || _isUploading)
                             ? Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
@@ -513,7 +899,9 @@ class _AddToiletPageState extends State<AddToiletPage> {
                                     ),
                                   ),
                                   SizedBox(width: 12),
-                                  Text('Submitting...'),
+                                  Text(_isUploading
+                                      ? 'Uploading Images...'
+                                      : 'Submitting...'),
                                 ],
                               )
                             : Text(widget.isEditing ? 'Update' : 'Submit'),

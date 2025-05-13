@@ -61,6 +61,8 @@ class _ManageToiletsPageState extends State<ManageToiletsPage> {
       'name': toiletData['name'] ?? '',
       'amenities': toiletData['amenities'] ?? [],
       'location': toiletData['location'] ?? {'latitude': 0.0, 'longitude': 0.0},
+      'imageUrls':
+          toiletData['imageUrls'] ?? [], // Include image URLs for editing
     };
 
     // Navigate to the edit page with the toilet data
@@ -76,6 +78,110 @@ class _ManageToiletsPageState extends State<ManageToiletsPage> {
     );
   }
 
+  // Method to show a carousel of images
+  void _showImageCarousel(List<String> imageUrls, String toiletName) {
+    if (imageUrls.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No images available for this toilet')),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        child: Container(
+          width: MediaQuery.of(context).size.width * 0.8,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Text(
+                  toiletName,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              Container(
+                height: MediaQuery.of(context).size.height * 0.4,
+                child: PageView.builder(
+                  itemCount: imageUrls.length,
+                  itemBuilder: (context, index) {
+                    return Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Image.network(
+                          imageUrls[index],
+                          fit: BoxFit.contain,
+                          errorBuilder: (context, error, stackTrace) {
+                            return Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.error, color: Colors.red),
+                                  SizedBox(height: 8),
+                                  Text('Failed to load image'),
+                                ],
+                              ),
+                            );
+                          },
+                          loadingBuilder: (context, child, loadingProgress) {
+                            if (loadingProgress == null) return child;
+                            return Center(
+                              child: CircularProgressIndicator(
+                                value: loadingProgress.expectedTotalBytes !=
+                                        null
+                                    ? loadingProgress.cumulativeBytesLoaded /
+                                        loadingProgress.expectedTotalBytes!
+                                    : null,
+                              ),
+                            );
+                          },
+                        ),
+                        Positioned(
+                          bottom: 16,
+                          right: 16,
+                          child: Container(
+                            padding: EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Text(
+                              '${index + 1}/${imageUrls.length}',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+              ButtonBar(
+                alignment: MainAxisAlignment.center,
+                children: [
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                    },
+                    child: Text('Close'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -85,13 +191,61 @@ class _ManageToiletsPageState extends State<ManageToiletsPage> {
           IconButton(
             icon: Icon(Icons.search),
             onPressed: () {
-              // Implement search functionality
+              // Show search dialog
+              showDialog(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: Text('Search Toilets'),
+                  content: TextField(
+                    decoration: InputDecoration(
+                      hintText: 'Enter toilet name',
+                      prefixIcon: Icon(Icons.search),
+                    ),
+                    onChanged: (value) {
+                      setState(() {
+                        _searchQuery = value;
+                      });
+                      Navigator.pop(context);
+                    },
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                      },
+                      child: Text('Cancel'),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        // Search is already handled by onChanged
+                        Navigator.pop(context);
+                      },
+                      child: Text('Search'),
+                    ),
+                  ],
+                ),
+              );
             },
           ),
         ],
       ),
       body: Column(
         children: [
+          // Search query indicator
+          if (_searchQuery.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Chip(
+                label: Text('Searching: $_searchQuery'),
+                deleteIcon: Icon(Icons.close, size: 18),
+                onDeleted: () {
+                  setState(() {
+                    _searchQuery = '';
+                  });
+                },
+              ),
+            ),
+
           // Toilets list
           Expanded(
             child: _currentUserId == null
@@ -161,6 +315,13 @@ class _ManageToiletsPageState extends State<ManageToiletsPage> {
                           final data = doc.data() as Map<String, dynamic>;
                           final location = data['location'] ?? {};
 
+                          // Get image URLs safely
+                          List<String> imageUrls = [];
+                          if (data['imageUrls'] != null &&
+                              data['imageUrls'] is List) {
+                            imageUrls = List<String>.from(data['imageUrls']);
+                          }
+
                           // Handle amenities data safely
                           String amenitiesText = 'No amenities';
                           if (data['amenities'] != null) {
@@ -179,121 +340,281 @@ class _ManageToiletsPageState extends State<ManageToiletsPage> {
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
-                            child: Padding(
-                              padding: const EdgeInsets.all(16.0),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      // Toilet icon
-                                      Container(
-                                        padding: EdgeInsets.all(10),
-                                        decoration: BoxDecoration(
-                                          color: Colors.blue.shade50,
-                                          borderRadius:
-                                              BorderRadius.circular(8),
-                                        ),
-                                        child:
-                                            Icon(Icons.wc, color: Colors.blue),
-                                      ),
-                                      SizedBox(width: 12),
-
-                                      // Toilet name
-                                      Expanded(
-                                        child: Text(
-                                          data['name'] ?? 'Unnamed Toilet',
-                                          style: TextStyle(
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.bold,
-                                          ),
+                            child: Column(
+                              children: [
+                                // Image preview (if available)
+                                if (imageUrls.isNotEmpty)
+                                  GestureDetector(
+                                    onTap: () => _showImageCarousel(imageUrls,
+                                        data['name'] ?? 'Unnamed Toilet'),
+                                    child: Container(
+                                      height: 150,
+                                      width: double.infinity,
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.only(
+                                          topLeft: Radius.circular(12),
+                                          topRight: Radius.circular(12),
                                         ),
                                       ),
-
-                                      // Options menu
-                                      PopupMenuButton(
-                                        onSelected: (value) {
-                                          if (value == 'delete') {
-                                            _deleteToilet(doc.id);
-                                          } else if (value == 'edit') {
-                                            _editToilet(doc.id, data);
-                                          }
-                                        },
-                                        itemBuilder: (context) => [
-                                          PopupMenuItem(
-                                            value: 'edit',
-                                            child: Row(
-                                              children: [
-                                                Icon(Icons.edit,
-                                                    color: Colors.blue,
-                                                    size: 20),
-                                                SizedBox(width: 8),
-                                                Text('Edit'),
-                                              ],
+                                      child: Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          ClipRRect(
+                                            borderRadius: BorderRadius.only(
+                                              topLeft: Radius.circular(12),
+                                              topRight: Radius.circular(12),
+                                            ),
+                                            child: Image.network(
+                                              imageUrls.first,
+                                              fit: BoxFit.cover,
+                                              errorBuilder:
+                                                  (context, error, stackTrace) {
+                                                return Container(
+                                                  color: Colors.grey[300],
+                                                  child: Center(
+                                                    child: Icon(
+                                                      Icons.image_not_supported,
+                                                      size: 40,
+                                                      color: Colors.grey[600],
+                                                    ),
+                                                  ),
+                                                );
+                                              },
                                             ),
                                           ),
-                                          PopupMenuItem(
-                                            value: 'delete',
-                                            child: Row(
-                                              children: [
-                                                Icon(Icons.delete,
-                                                    color: Colors.red,
-                                                    size: 20),
-                                                SizedBox(width: 8),
-                                                Text('Delete'),
-                                              ],
+                                          if (imageUrls.length > 1)
+                                            Positioned(
+                                              bottom: 8,
+                                              right: 8,
+                                              child: Container(
+                                                padding: EdgeInsets.symmetric(
+                                                    horizontal: 8, vertical: 4),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.black54,
+                                                  borderRadius:
+                                                      BorderRadius.circular(12),
+                                                ),
+                                                child: Text(
+                                                  '+${imageUrls.length - 1} more',
+                                                  style: TextStyle(
+                                                    color: Colors.white,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+
+                                Padding(
+                                  padding: const EdgeInsets.all(16.0),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          // Toilet icon
+                                          Container(
+                                            padding: EdgeInsets.all(10),
+                                            decoration: BoxDecoration(
+                                              color: Colors.blue.shade50,
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                            ),
+                                            child: Icon(Icons.wc,
+                                                color: Colors.blue),
+                                          ),
+                                          SizedBox(width: 12),
+
+                                          // Toilet name
+                                          Expanded(
+                                            child: Text(
+                                              data['name'] ?? 'Unnamed Toilet',
+                                              style: TextStyle(
+                                                fontSize: 16,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+
+                                          // Image count badge (if there are images)
+                                          if (imageUrls.isNotEmpty)
+                                            Container(
+                                              padding: EdgeInsets.symmetric(
+                                                  horizontal: 8, vertical: 4),
+                                              decoration: BoxDecoration(
+                                                color: Colors.green[100],
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
+                                              ),
+                                              child: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  Icon(Icons.image,
+                                                      size: 16,
+                                                      color: Colors.green[800]),
+                                                  SizedBox(width: 4),
+                                                  Text(
+                                                    '${imageUrls.length}',
+                                                    style: TextStyle(
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      color: Colors.green[800],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+
+                                          // Options menu
+                                          PopupMenuButton(
+                                            onSelected: (value) {
+                                              if (value == 'delete') {
+                                                _deleteToilet(doc.id);
+                                              } else if (value == 'edit') {
+                                                _editToilet(doc.id, data);
+                                              } else if (value ==
+                                                  'view_images') {
+                                                _showImageCarousel(
+                                                    imageUrls,
+                                                    data['name'] ??
+                                                        'Unnamed Toilet');
+                                              }
+                                            },
+                                            itemBuilder: (context) => [
+                                              if (imageUrls.isNotEmpty)
+                                                PopupMenuItem(
+                                                  value: 'view_images',
+                                                  child: Row(
+                                                    children: [
+                                                      Icon(Icons.photo_library,
+                                                          color: Colors.purple,
+                                                          size: 20),
+                                                      SizedBox(width: 8),
+                                                      Text('View Images'),
+                                                    ],
+                                                  ),
+                                                ),
+                                              PopupMenuItem(
+                                                value: 'edit',
+                                                child: Row(
+                                                  children: [
+                                                    Icon(Icons.edit,
+                                                        color: Colors.blue,
+                                                        size: 20),
+                                                    SizedBox(width: 8),
+                                                    Text('Edit'),
+                                                  ],
+                                                ),
+                                              ),
+                                              PopupMenuItem(
+                                                value: 'delete',
+                                                child: Row(
+                                                  children: [
+                                                    Icon(Icons.delete,
+                                                        color: Colors.red,
+                                                        size: 20),
+                                                    SizedBox(width: 8),
+                                                    Text('Delete'),
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                      SizedBox(height: 12),
+
+                                      // Amenities
+                                      Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Icon(Icons.bathroom_outlined,
+                                              size: 16, color: Colors.grey),
+                                          SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              'Amenities: $amenitiesText',
+                                              style: TextStyle(
+                                                fontSize: 14,
+                                                color: Colors.grey[700],
+                                              ),
                                             ),
                                           ),
                                         ],
                                       ),
+                                      SizedBox(height: 8),
+
+                                      // Location
+                                      if (location['latitude'] != null &&
+                                          location['longitude'] != null)
+                                        Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Icon(Icons.location_on,
+                                                size: 16, color: Colors.grey),
+                                            SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                'Location: (${location['latitude'].toStringAsFixed(4)}, ${location['longitude'].toStringAsFixed(4)})',
+                                                style: TextStyle(
+                                                  fontSize: 14,
+                                                  color: Colors.grey[700],
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                     ],
                                   ),
-                                  SizedBox(height: 12),
+                                ),
 
-                                  // Amenities
-                                  Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
+                                // Actions row
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                      left: 16, right: 16, bottom: 16),
+                                  child: Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Icon(Icons.bathroom_outlined,
-                                          size: 16, color: Colors.grey),
-                                      SizedBox(width: 8),
-                                      Expanded(
-                                        child: Text(
-                                          'Amenities: $amenitiesText',
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            color: Colors.grey[700],
-                                          ),
+                                      OutlinedButton.icon(
+                                        onPressed: () {
+                                          _editToilet(doc.id, data);
+                                        },
+                                        icon: Icon(Icons.edit, size: 18),
+                                        label: Text('Edit'),
+                                        style: OutlinedButton.styleFrom(
+                                          foregroundColor: Colors.blue,
+                                          side: BorderSide(color: Colors.blue),
+                                        ),
+                                      ),
+                                      OutlinedButton.icon(
+                                        onPressed: imageUrls.isNotEmpty
+                                            ? () => _showImageCarousel(
+                                                imageUrls,
+                                                data['name'] ??
+                                                    'Unnamed Toilet')
+                                            : null,
+                                        icon:
+                                            Icon(Icons.photo_library, size: 18),
+                                        label: Text('Images'),
+                                        style: OutlinedButton.styleFrom(
+                                          foregroundColor: Colors.purple,
+                                          side: BorderSide(
+                                              color: imageUrls.isNotEmpty
+                                                  ? Colors.purple
+                                                  : Colors.grey),
                                         ),
                                       ),
                                     ],
                                   ),
-                                  SizedBox(height: 8),
-
-                                  // Location
-                                  if (location['latitude'] != null &&
-                                      location['longitude'] != null)
-                                    Row(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Icon(Icons.location_on,
-                                            size: 16, color: Colors.grey),
-                                        SizedBox(width: 8),
-                                        Expanded(
-                                          child: Text(
-                                            'Location: (${location['latitude'].toStringAsFixed(4)}, ${location['longitude'].toStringAsFixed(4)})',
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              color: Colors.grey[700],
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
                           );
                         },
@@ -303,7 +624,7 @@ class _ManageToiletsPageState extends State<ManageToiletsPage> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
+      floatingActionButton: FloatingActionButton.extended(
         onPressed: () {
           Navigator.push(
             context,
@@ -311,7 +632,8 @@ class _ManageToiletsPageState extends State<ManageToiletsPage> {
                 builder: (context) => AddToiletPage(isEditing: false)),
           );
         },
-        child: Icon(Icons.add),
+        icon: Icon(Icons.add),
+        label: Text('Add Toilet'),
         tooltip: 'Add Toilet',
       ),
     );

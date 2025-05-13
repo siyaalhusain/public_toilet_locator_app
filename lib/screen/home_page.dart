@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-
 import 'package:geolocator/geolocator.dart';
 import 'package:project_x/screen/view_reviews_page.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -54,7 +53,6 @@ class _HomePageState extends State<HomePage> {
     _loadSearchHistory();
   }
 
-  // Load search history from shared preferences
   Future<void> _loadSearchHistory() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     List<String>? storedData =
@@ -69,29 +67,19 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Update _saveSearchHistory to save with user-specific key:
   Future<void> _saveSearchHistory(Map<String, dynamic> searchData) async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
-
-    // Add user ID to the search data
     searchData['userId'] = _currentUserId;
-
     _searchHistory.add(searchData);
-
-    // Filter to keep only this user's history
     _searchHistory = _searchHistory
         .where((item) => item['userId'] == _currentUserId)
         .toList();
-
-    // Convert list of maps to a list of JSON strings
     List<String> encodedList =
         _searchHistory.map((item) => json.encode(item)).toList();
-
     await prefs.setStringList('search_history_$_currentUserId', encodedList);
     setState(() {});
   }
 
-  // Get user location
   void _getUserLocation() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -132,7 +120,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Load all toilet markers
   void _loadMarkers() async {
     try {
       QuerySnapshot querySnapshot = await toiletsCollection.get();
@@ -156,8 +143,8 @@ class _HomePageState extends State<HomePage> {
                   title: name,
                   onTap: () {
                     _showToiletDetails({
-                      ...data, // Spread all the data
-                      'id': doc.id, // Make sure ID is included
+                      ...data,
+                      'id': doc.id,
                     });
                   },
                 ),
@@ -169,6 +156,10 @@ class _HomePageState extends State<HomePage> {
               'location': data['location'],
               'rating': data['rating'] ?? 0.0,
               'amenities': data['amenities'] ?? [],
+              'photoUrl':
+                  data['imageUrls'] != null && data['imageUrls'].isNotEmpty
+                      ? data['imageUrls'][0]
+                      : null,
             });
           }
         }
@@ -184,8 +175,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Search toilets by name
-  // Search toilets by name
   void _searchToilets(String query) async {
     if (query.isEmpty) {
       setState(() {
@@ -232,7 +221,7 @@ class _HomePageState extends State<HomePage> {
               'id': doc.id,
               'name': data['name'],
               'location': data['location'],
-              'userId': _currentUserId, // Include user ID
+              'userId': _currentUserId,
             });
           }
         }
@@ -244,7 +233,6 @@ class _HomePageState extends State<HomePage> {
       if (markers.isNotEmpty) {
         _markers.clear();
         if (_userLocation != null) {
-          // Add back the user's current location marker
           _markers.add(
             Marker(
               markerId: MarkerId("current_location"),
@@ -260,37 +248,31 @@ class _HomePageState extends State<HomePage> {
       _showCombinedList = query.isNotEmpty;
     });
 
-    // Immediately navigate to the first search result
     if (searchResults.isNotEmpty && _mapController != null) {
       var firstResult = searchResults.first.data() as Map<String, dynamic>;
       double lat = firstResult['location']['latitude'];
       double lng = firstResult['location']['longitude'];
 
-      // Animate to the location with appropriate zoom level
       _mapController.animateCamera(
         CameraUpdate.newLatLngZoom(
           LatLng(lat, lng),
-          15.0, // Higher zoom level for better visibility
+          15.0,
         ),
       );
     }
   }
 
-  // Show toilet details dialog
-// Combined _showToiletDetails function with both details and reviews
-// Show toilet details dialog with only its own reviews
   void _showToiletDetails(Map<String, dynamic> data) async {
     double toiletLat = data['location']['latitude'];
     double toiletLng = data['location']['longitude'];
     double avgRating = data['average_rating'] ?? 0.0;
-    String toiletId = data['id']; // Make sure this is the correct ID field
+    String toiletId = data['id'];
 
-    // Fetch reviews for this specific toilet only
     QuerySnapshot reviewsSnapshot = await FirebaseFirestore.instance
         .collection('washroom_reviews')
-        .where('toilet_id', isEqualTo: toiletId) // Filter by this toilet's ID
+        .where('toilet_id', isEqualTo: toiletId)
         .orderBy('timestamp', descending: true)
-        .limit(3) // Show only 3 most recent reviews
+        .limit(3)
         .get();
 
     List<Map<String, dynamic>> reviews = reviewsSnapshot.docs.map((doc) {
@@ -328,7 +310,6 @@ class _HomePageState extends State<HomePage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Toilet details
                 Container(
                   padding: EdgeInsets.all(10),
                   decoration: BoxDecoration(
@@ -349,6 +330,52 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
                 SizedBox(height: 15),
+
+                // Add photo display section if there are photos
+                if (data['imageUrls'] != null &&
+                    (data['imageUrls'] as List).isNotEmpty) ...[
+                  Text(
+                    "Photos",
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Container(
+                    height: 100,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: data['imageUrls'].length,
+                      itemBuilder: (context, index) {
+                        return Padding(
+                          padding: EdgeInsets.only(right: 8),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image.network(
+                              data['imageUrls'][index],
+                              width: 150,
+                              height: 100,
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) =>
+                                  Container(
+                                width: 150,
+                                height: 100,
+                                color: Colors.grey[200],
+                                child: Center(
+                                  child: Icon(Icons.broken_image,
+                                      color: Colors.grey),
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  SizedBox(height: 15),
+                ],
+
                 Row(
                   children: [
                     Icon(Icons.star, color: Colors.amber),
@@ -374,7 +401,6 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
 
-                // Reviews section
                 if (reviews.isNotEmpty) ...[
                   Divider(height: 25),
                   Text(
@@ -447,8 +473,7 @@ class _HomePageState extends State<HomePage> {
                         context,
                         MaterialPageRoute(
                           builder: (context) => ViewReviewsPage(
-                            toiletId: data[
-                                'id'], // Pass the toilet ID to ViewReviewsPage
+                            toiletId: data['id'],
                           ),
                         ),
                       );
@@ -498,7 +523,7 @@ class _HomePageState extends State<HomePage> {
                   context,
                   MaterialPageRoute(
                     builder: (context) => AddCommentPage(
-                      toiletId: toiletId, // Use the correct ID here
+                      toiletId: toiletId,
                       toiletName: data['name'],
                     ),
                   ),
@@ -511,7 +536,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // Get directions to a toilet
   Future<void> _getDirections(LatLng destination) async {
     if (_userLocation == null) {
       return;
@@ -635,7 +659,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Open Google Maps app
   void _openGoogleMaps(double lat, double lng) async {
     String url = 'https://www.google.com/maps?q=$lat,$lng&z=14';
     if (await canLaunch(url)) {
@@ -645,7 +668,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Filter functions
   void _openFilterPage() async {
     Navigator.push(
       context,
@@ -670,9 +692,7 @@ class _HomePageState extends State<HomePage> {
       _fetchFilteredToilets();
     }
   }
-// Add this method to your _HomePageState class
 
-// Method to fetch nearby toilets with reviews
   Future<List<Map<String, dynamic>>> _getNearbyToiletsWithReviews() async {
     if (_userLocation == null) return [];
 
@@ -693,7 +713,6 @@ class _HomePageState extends State<HomePage> {
                 _userLocation!.longitude, toiletLat, toiletLng);
 
             if (distanceInKm <= 10) {
-              // 10km radius
               nearbyToilets.add({
                 'id': doc.id,
                 'name': data['name'] ?? 'Unnamed Toilet',
@@ -701,7 +720,10 @@ class _HomePageState extends State<HomePage> {
                 'distance': distanceInKm,
                 'average_rating': data['average_rating'] ?? 0.0,
                 'reviewsCount': data['reviewsCount'] ?? 0,
-                'photoUrl': data['photoUrl'],
+                'photoUrl':
+                    data['imageUrls'] != null && data['imageUrls'].isNotEmpty
+                        ? data['imageUrls'][0]
+                        : null,
                 'location': data['location'],
                 'amenities': data['amenities'] ?? [],
               });
@@ -710,7 +732,6 @@ class _HomePageState extends State<HomePage> {
         }
       }
 
-      // Sort by distance
       nearbyToilets.sort((a, b) =>
           (a['distance'] as double).compareTo(b['distance'] as double));
 
@@ -721,14 +742,13 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-// Helper method to calculate distance
   double _calculateDistance(
       double lat1, double lon1, double lat2, double lon2) {
-    const double p = 0.017453292519943295; // Math.PI / 180
+    const double p = 0.017453292519943295;
     double a = 0.5 -
         cos((lat2 - lat1) * p) / 2 +
         cos(lat1 * p) * cos(lat2 * p) * (1 - cos((lon2 - lon1) * p)) / 2;
-    return 12742 * asin(sqrt(a)); // 2 * R; R = 6371 km
+    return 12742 * asin(sqrt(a));
   }
 
   void _fetchFilteredToilets() {
@@ -762,7 +782,6 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  // Bottom navigation
   void _onItemTapped(int index) {
     if (index == 1) {
       _openFilterPage();
@@ -785,9 +804,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-// ... [keep all imports and class declarations the same until the build method]
-
-  // REPLACEMENT FOR YOUR ENTIRE BUILD METHOD
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -816,7 +832,6 @@ class _HomePageState extends State<HomePage> {
         builder: (BuildContext context) {
           return Stack(
             children: [
-              // Google Map
               GoogleMap(
                 initialCameraPosition: CameraPosition(
                   target: _userLocation ?? const LatLng(37.7749, -122.4194),
@@ -832,8 +847,6 @@ class _HomePageState extends State<HomePage> {
                 myLocationButtonEnabled: false,
                 zoomControlsEnabled: false,
               ),
-
-              // Search bar
               Positioned(
                 top: 10,
                 left: 20,
@@ -884,8 +897,6 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ),
                     ),
-
-                    // Combined search results and history dropdown
                     if (_showCombinedList)
                       Container(
                         decoration: BoxDecoration(
@@ -975,8 +986,6 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
               ),
-
-              // Location button
               Positioned(
                 right: 20,
                 bottom: 120,
@@ -988,8 +997,6 @@ class _HomePageState extends State<HomePage> {
                   elevation: 4,
                 ),
               ),
-
-              // Bottom sheet toggle button
               Positioned(
                 right: 20,
                 bottom: 190,
@@ -1059,7 +1066,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-// Add this method to your class
   void _showToiletBottomSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
@@ -1089,7 +1095,6 @@ class _HomePageState extends State<HomePage> {
               ),
               child: Column(
                 children: [
-                  // Drag handle
                   Container(
                     margin: EdgeInsets.only(top: 10, bottom: 8),
                     height: 4,
@@ -1099,8 +1104,6 @@ class _HomePageState extends State<HomePage> {
                       borderRadius: BorderRadius.circular(10),
                     ),
                   ),
-
-                  // Header
                   Padding(
                     padding: EdgeInsets.only(left: 16, right: 16, bottom: 12),
                     child: Row(
@@ -1120,8 +1123,6 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                   Divider(height: 1, thickness: 1),
-
-                  // List of toilets
                   Expanded(
                     child: FutureBuilder<List<Map<String, dynamic>>>(
                       future: _getNearbyToiletsWithReviews(),
@@ -1177,6 +1178,10 @@ class _HomePageState extends State<HomePage> {
                                             child: Image.network(
                                               toilet['photoUrl'],
                                               fit: BoxFit.cover,
+                                              errorBuilder: (context, error,
+                                                      stackTrace) =>
+                                                  Icon(Icons.wc,
+                                                      color: Colors.blue),
                                             ),
                                           )
                                         : Icon(Icons.wc, color: Colors.blue),
@@ -1229,15 +1234,11 @@ class _HomePageState extends State<HomePage> {
                                       ),
                                     ],
                                   ),
-                                  // In the _showToiletBottomSheet method, replace the trailing ElevatedButton with this Row:
                                   trailing: ConstrainedBox(
-                                    constraints: BoxConstraints(
-                                        maxWidth:
-                                            120), // Adjust this value as needed
+                                    constraints: BoxConstraints(maxWidth: 120),
                                     child: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        // Add Comment Button
                                         ElevatedButton(
                                           onPressed: () {
                                             Navigator.pop(context);
@@ -1268,8 +1269,7 @@ class _HomePageState extends State<HomePage> {
                                           child:
                                               Icon(Icons.add_comment, size: 18),
                                         ),
-                                        SizedBox(width: 4), // Reduced spacing
-                                        // Details Button
+                                        SizedBox(width: 4),
                                         ElevatedButton(
                                           onPressed: () {
                                             Navigator.pop(context);

@@ -14,7 +14,7 @@ class _ContactUsPageState extends State<ContactUsPage>
 
   // Contact information
   final String _adminPhoneNumber = '+94715308550';
-  final String _adminEmail = 'support@locatar.com';
+  final String _adminEmail = 'husain200426@gmail.com';
   final String _adminAddress = '123 Main Street, Colombo, Sri Lanka';
   final String _adminHours = 'Monday - Friday: 9:00 AM - 5:00 PM';
 
