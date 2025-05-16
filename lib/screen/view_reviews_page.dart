@@ -8,7 +8,6 @@ import 'dart:convert';
 import 'dart:math' as Math;
 import 'AddCommentPage.dart';
 
-// Add this class at the top of the file (outside the ViewReviewsPage class)
 class _ToiletDetailsDialog extends StatelessWidget {
   final Map<String, dynamic> toiletData;
 
@@ -33,7 +32,6 @@ class _ToiletDetailsDialog extends StatelessWidget {
       content: SingleChildScrollView(
         child: Column(
           children: [
-            // Toilet details (amenities, etc.)
             Container(
               padding: EdgeInsets.all(10),
               decoration: BoxDecoration(
@@ -54,7 +52,52 @@ class _ToiletDetailsDialog extends StatelessWidget {
               ),
             ),
             SizedBox(height: 15),
-            // Rating
+
+            // Add photo display section if there are photos
+            if (toiletData['imageUrls'] != null &&
+                (toiletData['imageUrls'] as List).isNotEmpty) ...[
+              Text(
+                "Photos",
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+              SizedBox(height: 8),
+              Container(
+                height: 100,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: toiletData['imageUrls'].length,
+                  itemBuilder: (context, index) {
+                    return Padding(
+                      padding: EdgeInsets.only(right: 8),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.network(
+                          toiletData['imageUrls'][index],
+                          width: 150,
+                          height: 100,
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) =>
+                              Container(
+                            width: 150,
+                            height: 100,
+                            color: Colors.grey[200],
+                            child: Center(
+                              child:
+                                  Icon(Icons.broken_image, color: Colors.grey),
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              SizedBox(height: 15),
+            ],
+
             Row(
               children: [
                 Icon(Icons.star, color: Colors.amber),
@@ -78,7 +121,6 @@ class _ToiletDetailsDialog extends StatelessWidget {
               ],
             ),
             Divider(height: 25),
-            // All reviews section
             FutureBuilder<QuerySnapshot>(
               future: FirebaseFirestore.instance
                   .collection('washroom_reviews')
@@ -201,7 +243,7 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
   List<Map<String, dynamic>> _filteredSearchHistory = [];
 
   late TabController _tabController;
-  final double _nearbyRadius = 10.0; // 10km radius
+  final double _nearbyRadius = 10.0;
 
   @override
   void initState() {
@@ -273,11 +315,9 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
 
   Future<void> _loadSearchHistory() async {
     try {
-      // Get current user ID
       User? currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return;
 
-      // Access user-specific search history using their UID
       SharedPreferences prefs = await SharedPreferences.getInstance();
       List<String>? storedData =
           prefs.getStringList('search_history_${currentUser.uid}');
@@ -305,7 +345,10 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
               'reviewsCount': data['reviewsCount'] ?? 0,
               'searchTimestamp': item['searchTimestamp'] ??
                   DateTime.now().millisecondsSinceEpoch,
-              'photoUrl': data['photoUrl'],
+              'photoUrl':
+                  data['imageUrls'] != null && data['imageUrls'].isNotEmpty
+                      ? data['imageUrls'][0]
+                      : null,
               'amenities': data['amenities'] ?? [],
             });
           }
@@ -314,7 +357,6 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
         }
       }
 
-      // Sort by most recently searched
       toilets.sort((a, b) =>
           (b['searchTimestamp'] as int).compareTo(a['searchTimestamp'] as int));
 
@@ -365,7 +407,10 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
               'lastCommentDate': reviewData['timestamp'] != null
                   ? (reviewData['timestamp'] as Timestamp).toDate()
                   : null,
-              'photoUrl': toiletData['photoUrl'],
+              'photoUrl': toiletData['imageUrls'] != null &&
+                      toiletData['imageUrls'].isNotEmpty
+                  ? toiletData['imageUrls'][0]
+                  : null,
               'userRating': reviewData['rating'] ?? 0.0,
               'comment': reviewData['comment'] ?? '',
               'review_id': doc.id,
@@ -414,7 +459,10 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
                 'distance': distanceInKm,
                 'average_rating': data['average_rating'] ?? 0.0,
                 'reviewsCount': data['reviewsCount'] ?? 0,
-                'photoUrl': data['photoUrl'],
+                'photoUrl':
+                    data['imageUrls'] != null && data['imageUrls'].isNotEmpty
+                        ? data['imageUrls'][0]
+                        : null,
                 'amenities': data['amenities'] ?? [],
               });
             }
@@ -444,7 +492,6 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
     return 12742 * Math.asin(Math.sqrt(a));
   }
 
-  // Add a toilet to search history
   Future<void> _addToSearchHistory(String toiletId, String toiletName) async {
     try {
       User? currentUser = FirebaseAuth.instance.currentUser;
@@ -454,32 +501,24 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
       List<String> storedData =
           prefs.getStringList('search_history_${currentUser.uid}') ?? [];
 
-      // Create search history item
       Map<String, dynamic> searchItem = {
         'id': toiletId,
         'name': toiletName,
         'searchTimestamp': DateTime.now().millisecondsSinceEpoch,
       };
 
-      // Check if this toilet is already in history
       List<Map<String, dynamic>> existingHistory = storedData
           .map((item) => json.decode(item) as Map<String, dynamic>)
           .toList();
 
-      // Remove if it exists (to update with new timestamp)
       existingHistory.removeWhere((item) => item['id'] == toiletId);
-
-      // Add the new/updated item
       existingHistory.add(searchItem);
 
-      // Save back to preferences
       List<String> updatedData =
           existingHistory.map((item) => json.encode(item)).toList();
 
       await prefs.setStringList(
           'search_history_${currentUser.uid}', updatedData);
-
-      // Reload the search history
       await _loadSearchHistory();
     } catch (e) {
       print('Error adding to search history: $e');
@@ -487,7 +526,6 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
   }
 
   void _navigateToAddComment(String toiletId, String toiletName) async {
-    // Add to search history when viewing details
     await _addToSearchHistory(toiletId, toiletName);
 
     final result = await Navigator.push(
@@ -513,24 +551,19 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
     }
   }
 
-  // New method to show toilet details dialog
   void _showToiletDetails(Map<String, dynamic> toilet) async {
-    // Add to search history when viewing details
     await _addToSearchHistory(toilet['id'], toilet['name']);
 
-    // Fetch full toilet data in case there's missing information
     try {
       DocumentSnapshot toiletDoc =
           await _firestore.collection('toilets').doc(toilet['id']).get();
 
       if (toiletDoc.exists) {
-        // Merge existing toilet data with full data from Firestore
         var fullToiletData = {
           ...toiletDoc.data() as Map<String, dynamic>,
           'id': toilet['id'],
         };
 
-        // Show the details dialog
         showDialog(
           context: context,
           builder: (context) => _ToiletDetailsDialog(
@@ -540,7 +573,6 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
       }
     } catch (e) {
       print('Error loading toilet details: $e');
-      // If there's an error, show with the data we already have
       showDialog(
         context: context,
         builder: (context) => _ToiletDetailsDialog(
@@ -707,8 +739,6 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
                 ),
               ],
             ),
-
-            // Show user review section if this is in the reviewed tab
             if (showUserReview && toilet['userRating'] != null)
               Padding(
                 padding: const EdgeInsets.only(top: 12.0),
@@ -763,13 +793,9 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
                   ],
                 ),
               ),
-
             SizedBox(height: 12),
-
-            // Replace single button with a row of two buttons
             Row(
               children: [
-                // Details Button
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: () => _showToiletDetails(toilet),
@@ -786,7 +812,6 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
                   ),
                 ),
                 SizedBox(width: 10),
-                // Review Button
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: () =>
@@ -812,12 +837,10 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
     );
   }
 
-  // Helper function to format date
   String _formatDate(DateTime date) {
     return "${date.day}/${date.month}/${date.year}";
   }
 
-  // Helper function to format timestamp
   String _formatTimeFromTimestamp(int timestamp) {
     DateTime date = DateTime.fromMillisecondsSinceEpoch(timestamp);
     return "${date.day}/${date.month}/${date.year}";
@@ -845,7 +868,6 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
           : TabBarView(
               controller: _tabController,
               children: [
-                // Nearby Toilets Tab
                 _locationError
                     ? Center(
                         child: Padding(
@@ -924,8 +946,6 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
                               },
                             ),
                           ),
-
-                // Recently Searched Toilets Tab with Search
                 Column(
                   children: [
                     Padding(
@@ -990,8 +1010,6 @@ class _ViewReviewsPageState extends State<ViewReviewsPage>
                     ),
                   ],
                 ),
-
-                // User's Commented Toilets Tab
                 _commentedToilets.isEmpty
                     ? Center(
                         child: Column(

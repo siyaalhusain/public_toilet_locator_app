@@ -1,6 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:project_x/screen/profile_page.dart';
+import 'package:project_x/screen/view_counting_page.dart';
+
+import 'AddCommentPage.dart';
+import 'ViewReportsPage.dart';
+import 'View_assign_task.dart';
+import 'admin_payment_verification_screen.dart';
 
 class NotificationPage extends StatefulWidget {
   @override
@@ -9,12 +17,37 @@ class NotificationPage extends StatefulWidget {
 
 class _NotificationPageState extends State<NotificationPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
   bool _isRefreshing = false;
+  String? _currentUserRole;
 
-  // Fetch notifications from Firestore
+  @override
+  void initState() {
+    super.initState();
+    _getCurrentUserRole();
+  }
+
+  Future<void> _getCurrentUserRole() async {
+    User? user = _auth.currentUser;
+    if (user != null) {
+      DocumentSnapshot userDoc =
+          await _firestore.collection('users').doc(user.uid).get();
+      setState(() {
+        _currentUserRole = userDoc['role'] ?? 'user';
+      });
+    }
+  }
+
+  // Fetch notifications from Firestore with role filtering
   Stream<List<Map<String, dynamic>>> _getNotifications() {
+    if (_currentUserRole == null) return Stream.value([]);
+
+    User? user = _auth.currentUser;
+    if (user == null) return Stream.value([]);
+
     return _firestore
         .collection('notifications')
+        .where('userId', isEqualTo: user.uid)
         .orderBy('timestamp', descending: true)
         .snapshots()
         .map((snapshot) {
@@ -22,13 +55,20 @@ class _NotificationPageState extends State<NotificationPage> {
         return {
           'id': doc.id,
           'message': doc['message'],
-          'sender': doc['sender'],
+          'sender': doc['sender'] ?? 'System',
           'timestamp': doc['timestamp'],
           'isRead': doc['isRead'] ?? false,
           'type': doc['type'] ?? 'general',
           'image': doc['image'],
           'actionUrl': doc['actionUrl'],
+          'relatedPage': doc['relatedPage'],
+          'relatedId': doc['relatedId'],
+          'role': doc['role'] ?? 'user',
         };
+      }).where((notification) {
+        // Filter notifications by role (either personal or role-based)
+        return notification['userId'] == user.uid ||
+            notification['role'] == _currentUserRole;
       }).toList();
     });
   }
@@ -39,13 +79,13 @@ class _NotificationPageState extends State<NotificationPage> {
     });
 
     await Future.delayed(Duration(seconds: 1));
+    await _getCurrentUserRole();
 
     setState(() {
       _isRefreshing = false;
     });
   }
 
-  // Mark notification as read
   Future<void> _markAsRead(String notificationId) async {
     await _firestore
         .collection('notifications')
@@ -53,12 +93,45 @@ class _NotificationPageState extends State<NotificationPage> {
         .update({'isRead': true});
   }
 
-  // Delete notification
   Future<void> _deleteNotification(String notificationId) async {
     await _firestore.collection('notifications').doc(notificationId).delete();
   }
 
-  // Format timestamp
+  Future<void> _markAllAsRead() async {
+    User? user = _auth.currentUser;
+    if (user == null) return;
+
+    QuerySnapshot unreadNotifications = await _firestore
+        .collection('notifications')
+        .where('userId', isEqualTo: user.uid)
+        .where('isRead', isEqualTo: false)
+        .get();
+
+    WriteBatch batch = _firestore.batch();
+    for (var doc in unreadNotifications.docs) {
+      batch.update(doc.reference, {'isRead': true});
+    }
+
+    await batch.commit();
+  }
+
+  Future<void> _clearAllNotifications() async {
+    User? user = _auth.currentUser;
+    if (user == null) return;
+
+    QuerySnapshot userNotifications = await _firestore
+        .collection('notifications')
+        .where('userId', isEqualTo: user.uid)
+        .get();
+
+    WriteBatch batch = _firestore.batch();
+    for (var doc in userNotifications.docs) {
+      batch.delete(doc.reference);
+    }
+
+    await batch.commit();
+  }
+
   String _formatTimestamp(Timestamp timestamp) {
     DateTime dateTime = timestamp.toDate();
     DateTime now = DateTime.now();
@@ -78,7 +151,6 @@ class _NotificationPageState extends State<NotificationPage> {
     }
   }
 
-  // Get icon based on notification type
   IconData _getNotificationIcon(String type) {
     switch (type) {
       case 'alert':
@@ -87,18 +159,27 @@ class _NotificationPageState extends State<NotificationPage> {
         return Icons.system_update;
       case 'promotion':
         return Icons.local_offer;
-      case 'reminder':
-        return Icons.notification_important;
+      case 'report':
+        return Icons.report_problem;
+      case 'count':
+        return Icons.people;
       case 'review':
         return Icons.rate_review;
+      case 'task':
+        return Icons.assignment;
+      case 'payment':
+        return Icons.payment;
       case 'comment':
         return Icons.comment;
+      case 'maintenance':
+        return Icons.build;
+      case 'subscription':
+        return Icons.card_membership;
       default:
         return Icons.notifications;
     }
   }
 
-  // Get color based on notification type
   Color _getNotificationColor(String type) {
     switch (type) {
       case 'alert':
@@ -107,14 +188,83 @@ class _NotificationPageState extends State<NotificationPage> {
         return Colors.blue;
       case 'promotion':
         return Colors.green;
-      case 'reminder':
+      case 'report':
         return Colors.orange;
-      case 'review':
+      case 'count':
         return Colors.purple;
-      case 'comment':
+      case 'review':
         return Colors.teal;
+      case 'task':
+        return Colors.indigo;
+      case 'payment':
+        return Colors.green;
+      case 'comment':
+        return Colors.blueGrey;
+      case 'maintenance':
+        return Colors.deepOrange;
+      case 'subscription':
+        return Colors.pink;
       default:
         return Colors.grey;
+    }
+  }
+
+  void _handleNotificationTap(Map<String, dynamic> notification) {
+    // Mark as read when tapped
+    if (!notification['isRead']) {
+      _markAsRead(notification['id']);
+    }
+
+    // Handle navigation based on relatedPage
+    String? relatedPage = notification['relatedPage'];
+    String? relatedId = notification['relatedId'];
+
+    switch (relatedPage) {
+      case 'reports':
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => ViewReportsPage()),
+        );
+        break;
+      case 'counting':
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => OwnerCountingPage()),
+        );
+        break;
+      case 'tasks':
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => ViewAssignedTasksPage()),
+        );
+        break;
+      case 'comments':
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => AddCommentPage()),
+        );
+        break;
+      case 'payments':
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+              builder: (context) => AdminPaymentVerificationScreen()),
+        );
+        break;
+      case 'profile':
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+              builder: (context) =>
+                  ProfilePage(role: 'user')), // Add the required role parameter
+        );
+        break;
+      default:
+        // Handle general notifications or URLs
+        if (notification['actionUrl'] != null) {
+          // Launch URL if available
+          // launchUrl(Uri.parse(notification['actionUrl']));
+        }
     }
   }
 
@@ -149,7 +299,7 @@ class _NotificationPageState extends State<NotificationPage> {
                           leading: Icon(Icons.check_circle_outline),
                           title: Text('Mark all as read'),
                           onTap: () {
-                            // Implement mark all as read functionality
+                            _markAllAsRead();
                             Navigator.pop(context);
                           },
                         ),
@@ -157,7 +307,7 @@ class _NotificationPageState extends State<NotificationPage> {
                           leading: Icon(Icons.delete_outline),
                           title: Text('Clear all notifications'),
                           onTap: () {
-                            // Implement clear all functionality
+                            _clearAllNotifications();
                             Navigator.pop(context);
                           },
                         ),
@@ -165,8 +315,8 @@ class _NotificationPageState extends State<NotificationPage> {
                           leading: Icon(Icons.settings_outlined),
                           title: Text('Notification settings'),
                           onTap: () {
-                            // Navigate to settings
                             Navigator.pop(context);
+                            // Navigate to settings
                           },
                         ),
                       ],
@@ -355,17 +505,7 @@ class _NotificationPageState extends State<NotificationPage> {
                             ],
                           ),
                           child: InkWell(
-                            onTap: () {
-                              // Mark as read when tapped
-                              if (!isRead) {
-                                _markAsRead(notification['id']);
-                              }
-
-                              // Handle notification action if needed
-                              if (notification['actionUrl'] != null) {
-                                // Navigate or perform action
-                              }
-                            },
+                            onTap: () => _handleNotificationTap(notification),
                             borderRadius: BorderRadius.circular(12),
                             child: Padding(
                               padding: const EdgeInsets.all(16.0),

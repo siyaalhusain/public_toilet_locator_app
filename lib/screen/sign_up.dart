@@ -56,26 +56,27 @@ class _SignUpState extends State<SignUp> with SingleTickerProviderStateMixin {
   late Animation<double> _fadeAnimation;
 
   // Hardcoded subscription plans
+// Hardcoded subscription plans with LKR currency and updated prices
   final List<SubscriptionPlan> _subscriptionPlans = [
     SubscriptionPlan(
       id: 'basic',
       name: 'Basic',
       description: 'List up to 2 restrooms',
-      price: 9.99,
+      price: 1000.0,
       duration: '1 month',
     ),
     SubscriptionPlan(
       id: 'standard',
       name: 'Standard',
       description: 'List up to 5 restrooms',
-      price: 19.99,
+      price: 2000.0,
       duration: '1 month',
     ),
     SubscriptionPlan(
       id: 'premium',
       name: 'Premium',
       description: 'Unlimited restrooms with analytics',
-      price: 29.99,
+      price: 3000.0,
       duration: '1 month',
     ),
   ];
@@ -866,7 +867,7 @@ class _SignUpState extends State<SignUp> with SingleTickerProviderStateMixin {
                                     ),
                                     SizedBox(height: 6),
                                     Text(
-                                      "Amount: \$${_selectedPlan?.price.toStringAsFixed(2)}",
+                                      "Amount: LKR ${_selectedPlan?.price.toStringAsFixed(0)}",
                                       style: TextStyle(
                                         fontSize: 14,
                                         fontWeight: FontWeight.bold,
@@ -1283,7 +1284,7 @@ class _SignUpState extends State<SignUp> with SingleTickerProviderStateMixin {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  "\$${plan.price.toStringAsFixed(2)}",
+                  "LKR ${plan.price.toStringAsFixed(0)}",
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
