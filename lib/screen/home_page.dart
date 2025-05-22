@@ -12,6 +12,7 @@ import 'package:flutter_rating_bar/flutter_rating_bar.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'AddCommentPage.dart' show AddCommentPage;
+import 'nearbytoiletspage.dart';
 import 'profile_page.dart';
 import 'notifications_page.dart';
 import 'login_page.dart';
@@ -330,8 +331,6 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
                 SizedBox(height: 15),
-
-                // Add photo display section if there are photos
                 if (data['imageUrls'] != null &&
                     (data['imageUrls'] as List).isNotEmpty) ...[
                   Text(
@@ -375,7 +374,6 @@ class _HomePageState extends State<HomePage> {
                   ),
                   SizedBox(height: 15),
                 ],
-
                 Row(
                   children: [
                     Icon(Icons.star, color: Colors.amber),
@@ -400,7 +398,6 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ],
                 ),
-
                 if (reviews.isNotEmpty) ...[
                   Divider(height: 25),
                   Text(
@@ -669,20 +666,27 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _openFilterPage() async {
-    Navigator.push(
+    final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => FilterPage(
           onApplyFilter: (selectedRating, selectedAmenities) {
-            setState(() {
-              _selectedRating = selectedRating;
-              _selectedAmenities = selectedAmenities;
+            Navigator.pop(context, {
+              'rating': selectedRating,
+              'amenities': selectedAmenities,
             });
-            _applyFilters();
           },
         ),
       ),
     );
+
+    if (result != null) {
+      setState(() {
+        _selectedRating = result['rating'];
+        _selectedAmenities = List<String>.from(result['amenities']);
+      });
+      _applyFilters();
+    }
   }
 
   void _applyFilters() {
@@ -782,24 +786,54 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  void _onItemTapped(int index) {
-    if (index == 1) {
-      _openFilterPage();
-    } else if (index == 2) {
-      Navigator.push(
+  void _onItemTapped(int index) async {
+    if (index == 0) {
+      // Already on home, just set index
+      setState(() {
+        _selectedIndex = 0;
+      });
+    } else if (index == 1) {
+      final result = await Navigator.push(
         context,
-        MaterialPageRoute(builder: (context) => NotificationPage()),
+        MaterialPageRoute(
+          builder: (context) => FilterPage(
+            onApplyFilter: (selectedRating, selectedAmenities) {
+              Navigator.pop(context, {
+                'rating': selectedRating,
+                'amenities': selectedAmenities,
+              });
+            },
+          ),
+        ),
       );
+
+      if (result != null) {
+        setState(() {
+          _selectedRating = result['rating'];
+          _selectedAmenities = List<String>.from(result['amenities']);
+          _selectedIndex = 0; // ✅ Return to Home with Home icon active
+        });
+        _applyFilters();
+      }
+    } else if (index == 2) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => NearbyToiletsPage(userLocation: _userLocation),
+        ),
+      );
+      setState(() {
+        _selectedIndex = 0; // ✅ Return to Home with Home icon active
+      });
     } else if (index == 3) {
-      Navigator.push(
+      await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => ProfilePage(role: widget.loggedInUserRole),
         ),
       );
-    } else {
       setState(() {
-        _selectedIndex = index;
+        _selectedIndex = 0; // ✅ Return to Home with Home icon active
       });
     }
   }
@@ -997,19 +1031,6 @@ class _HomePageState extends State<HomePage> {
                   elevation: 4,
                 ),
               ),
-              Positioned(
-                right: 20,
-                bottom: 190,
-                child: FloatingActionButton(
-                  heroTag: "bottomSheetBtn",
-                  backgroundColor: Colors.white,
-                  onPressed: () {
-                    _showToiletBottomSheet(context);
-                  },
-                  child: Icon(Icons.list, color: Colors.blue),
-                  elevation: 4,
-                ),
-              ),
             ],
           );
         },
@@ -1052,8 +1073,8 @@ class _HomePageState extends State<HomePage> {
                 label: 'Filter',
               ),
               BottomNavigationBarItem(
-                icon: Icon(Icons.notifications),
-                label: 'Alerts',
+                icon: Icon(Icons.list),
+                label: 'Nearby',
               ),
               BottomNavigationBarItem(
                 icon: Icon(Icons.person),
@@ -1063,251 +1084,6 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
       ),
-    );
-  }
-
-  void _showToiletBottomSheet(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (BuildContext context) {
-        return DraggableScrollableSheet(
-          initialChildSize: 0.4,
-          minChildSize: 0.2,
-          maxChildSize: 0.8,
-          expand: false,
-          builder: (context, scrollController) {
-            return Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(20),
-                  topRight: Radius.circular(20),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black26,
-                    blurRadius: 10,
-                    spreadRadius: 0,
-                  ),
-                ],
-              ),
-              child: Column(
-                children: [
-                  Container(
-                    margin: EdgeInsets.only(top: 10, bottom: 8),
-                    height: 4,
-                    width: 40,
-                    decoration: BoxDecoration(
-                      color: Colors.grey[300],
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  Padding(
-                    padding: EdgeInsets.only(left: 16, right: 16, bottom: 12),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.star, color: Colors.amber, size: 20),
-                        SizedBox(width: 8),
-                        Text(
-                          "Nearby Toilets",
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.blue[800],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Divider(height: 1, thickness: 1),
-                  Expanded(
-                    child: FutureBuilder<List<Map<String, dynamic>>>(
-                      future: _getNearbyToiletsWithReviews(),
-                      builder: (context, snapshot) {
-                        if (snapshot.connectionState ==
-                            ConnectionState.waiting) {
-                          return Center(child: CircularProgressIndicator());
-                        }
-
-                        if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                          return Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.wc, size: 40, color: Colors.grey),
-                                SizedBox(height: 10),
-                                Text(
-                                  "No nearby toilets found",
-                                  style: TextStyle(color: Colors.grey[600]),
-                                ),
-                              ],
-                            ),
-                          );
-                        }
-
-                        return ListView.builder(
-                          controller: scrollController,
-                          padding: EdgeInsets.only(bottom: 20),
-                          itemCount: snapshot.data!.length,
-                          itemBuilder: (context, index) {
-                            var toilet = snapshot.data![index];
-                            return Padding(
-                              padding: EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 6),
-                              child: Card(
-                                elevation: 2,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: ListTile(
-                                  contentPadding: EdgeInsets.all(12),
-                                  leading: Container(
-                                    width: 60,
-                                    height: 60,
-                                    decoration: BoxDecoration(
-                                      color: Colors.blue.withOpacity(0.1),
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: toilet['photoUrl'] != null
-                                        ? ClipRRect(
-                                            borderRadius:
-                                                BorderRadius.circular(8),
-                                            child: Image.network(
-                                              toilet['photoUrl'],
-                                              fit: BoxFit.cover,
-                                              errorBuilder: (context, error,
-                                                      stackTrace) =>
-                                                  Icon(Icons.wc,
-                                                      color: Colors.blue),
-                                            ),
-                                          )
-                                        : Icon(Icons.wc, color: Colors.blue),
-                                  ),
-                                  title: Text(
-                                    toilet['name'] ?? 'Unnamed Toilet',
-                                    style:
-                                        TextStyle(fontWeight: FontWeight.bold),
-                                  ),
-                                  subtitle: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      SizedBox(height: 4),
-                                      Row(
-                                        children: [
-                                          Icon(Icons.star,
-                                              color: Colors.amber, size: 16),
-                                          SizedBox(width: 4),
-                                          Text(
-                                            "${toilet['average_rating']?.toStringAsFixed(1) ?? '0.0'}",
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                          SizedBox(width: 8),
-                                          Text(
-                                            "(${toilet['reviewsCount'] ?? 0} reviews)",
-                                            style: TextStyle(
-                                              color: Colors.grey[600],
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      SizedBox(height: 4),
-                                      Row(
-                                        children: [
-                                          Icon(Icons.location_on,
-                                              color: Colors.green, size: 16),
-                                          SizedBox(width: 4),
-                                          Text(
-                                            "${toilet['distance']?.toStringAsFixed(1) ?? '?'} km away",
-                                            style: TextStyle(
-                                              color: Colors.green,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                  trailing: ConstrainedBox(
-                                    constraints: BoxConstraints(maxWidth: 120),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        ElevatedButton(
-                                          onPressed: () {
-                                            Navigator.pop(context);
-                                            Navigator.push(
-                                              context,
-                                              MaterialPageRoute(
-                                                builder: (context) =>
-                                                    AddCommentPage(
-                                                  toiletId: toilet['id'],
-                                                  toiletName: toilet['name'],
-                                                ),
-                                              ),
-                                            );
-                                          },
-                                          style: ElevatedButton.styleFrom(
-                                            foregroundColor: Colors.white,
-                                            backgroundColor: Colors.green,
-                                            padding: EdgeInsets.symmetric(
-                                                horizontal: 8, vertical: 6),
-                                            shape: RoundedRectangleBorder(
-                                              borderRadius:
-                                                  BorderRadius.circular(20),
-                                            ),
-                                            minimumSize: Size(0, 30),
-                                            tapTargetSize: MaterialTapTargetSize
-                                                .shrinkWrap,
-                                          ),
-                                          child:
-                                              Icon(Icons.add_comment, size: 18),
-                                        ),
-                                        SizedBox(width: 4),
-                                        ElevatedButton(
-                                          onPressed: () {
-                                            Navigator.pop(context);
-                                            _showToiletDetails(toilet);
-                                          },
-                                          style: ElevatedButton.styleFrom(
-                                            foregroundColor: Colors.white,
-                                            backgroundColor: Colors.blue,
-                                            padding: EdgeInsets.symmetric(
-                                                horizontal: 8, vertical: 6),
-                                            shape: RoundedRectangleBorder(
-                                              borderRadius:
-                                                  BorderRadius.circular(20),
-                                            ),
-                                            minimumSize: Size(0, 30),
-                                            tapTargetSize: MaterialTapTargetSize
-                                                .shrinkWrap,
-                                          ),
-                                          child: Text("Details",
-                                              style: TextStyle(fontSize: 12)),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
     );
   }
 }
