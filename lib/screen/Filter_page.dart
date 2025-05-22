@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'home_page.dart';
 
 class FilterPage extends StatefulWidget {
   final Function(String, List<String>) onApplyFilter;
@@ -32,7 +31,7 @@ class _FilterPageState extends State<FilterPage> {
     {"name": "Bathing", "icon": Icons.shower, "color": Colors.cyan},
     {"name": "Private", "icon": Icons.visibility_off, "color": Colors.red},
     {"name": "Open to Public", "icon": Icons.public, "color": Colors.green},
-    {"name": "All", "icon": Icons.all_inbox, "color": Colors.amber}
+    {"name": "All", "icon": Icons.all_inbox, "color": Colors.amber},
   ];
 
   Set<String> selectedAmenities = {};
@@ -40,19 +39,13 @@ class _FilterPageState extends State<FilterPage> {
 
   void applyFilters() {
     widget.onApplyFilter(selectedRating, selectedAmenities.toList());
-    Navigator.pop(context); // Goes back to Home page
   }
 
-  void _clearFilters() {
-    setState(() {
-      selectedRating = "Any";
-      selectedAmenities.clear();
-      hasChanges = true;
-    });
-
-    // Apply cleared filters and go to Home page
-    widget.onApplyFilter(selectedRating, selectedAmenities.toList());
-    Navigator.pop(context); // Goes back to Home page
+  void _resetFilters() {
+    selectedRating = "Any";
+    selectedAmenities.clear();
+    hasChanges = true;
+    widget.onApplyFilter(selectedRating, []);
   }
 
   void _updateHasChanges() {
@@ -75,18 +68,6 @@ class _FilterPageState extends State<FilterPage> {
           icon: Icon(Icons.arrow_back),
           onPressed: () => Navigator.pop(context),
         ),
-        actions: [
-          TextButton(
-            onPressed: _clearFilters,
-            child: Text(
-              "Reset",
-              style: TextStyle(
-                color: Colors.blue,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ],
       ),
       body: Column(
         children: [
@@ -97,21 +78,16 @@ class _FilterPageState extends State<FilterPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Clean Rating Section
                     _buildSectionHeader(
                         "Cleanliness Rating", Icons.cleaning_services),
                     SizedBox(height: 16),
                     _buildRatingOptions(),
-
                     SizedBox(height: 24),
                     Divider(),
                     SizedBox(height: 24),
-
-                    // Amenities Section
                     _buildSectionHeader("Amenities", Icons.room_preferences),
                     SizedBox(height: 16),
                     _buildAmenitiesGrid(),
-
                     SizedBox(height: 40),
                   ],
                 ),
@@ -148,10 +124,9 @@ class _FilterPageState extends State<FilterPage> {
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: Offset(0, 2),
-          ),
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 10,
+              offset: Offset(0, 2)),
         ],
       ),
       child: Column(
@@ -237,22 +212,15 @@ class _FilterPageState extends State<FilterPage> {
                 color: isSelected ? amenity["color"] : Colors.grey[300]!,
                 width: isSelected ? 2 : 1,
               ),
-              boxShadow: isSelected
-                  ? [
-                      BoxShadow(
-                        color: amenity["color"].withOpacity(0.2),
-                        blurRadius: 8,
-                        spreadRadius: 1,
-                        offset: Offset(0, 2),
-                      ),
-                    ]
-                  : [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.05),
-                        blurRadius: 5,
-                        offset: Offset(0, 2),
-                      ),
-                    ],
+              boxShadow: [
+                BoxShadow(
+                  color: isSelected
+                      ? amenity["color"].withOpacity(0.2)
+                      : Colors.black.withOpacity(0.05),
+                  blurRadius: isSelected ? 8 : 5,
+                  offset: Offset(0, 2),
+                ),
+              ],
             ),
             child: Row(
               children: [
@@ -308,7 +276,7 @@ class _FilterPageState extends State<FilterPage> {
           children: [
             Expanded(
               child: ElevatedButton(
-                onPressed: () => Navigator.pop(context),
+                onPressed: _resetFilters,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.white,
                   foregroundColor: Colors.blue,
@@ -319,7 +287,7 @@ class _FilterPageState extends State<FilterPage> {
                     borderRadius: BorderRadius.circular(10),
                   ),
                 ),
-                child: Text('Cancel'),
+                child: Text('Reset'),
               ),
             ),
             SizedBox(width: 16),
