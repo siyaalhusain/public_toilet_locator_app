@@ -45,7 +45,6 @@ class _LoginScreenState extends State<LoginScreen>
 
     _animationController.forward();
 
-    // Set error message if provided
     if (widget.errorMessage != null) {
       _loginError = widget.errorMessage;
     }
@@ -60,20 +59,16 @@ class _LoginScreenState extends State<LoginScreen>
   }
 
   Future<bool> _verifyAccountStatus(UserCredential userCredential) async {
-    // Check if user exists
     if (userCredential.user != null) {
       String userId = userCredential.user!.uid;
 
-      // Fetch user data from Firestore
       DocumentSnapshot userDoc =
           await _firestore.collection('users').doc(userId).get();
 
       if (userDoc.exists) {
         Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
 
-        // Check if user is an Owner and verify account status
         if (userData['role'] == 'Owner') {
-          // Check if account is active
           bool isActive = userData['isAccountActive'] ?? false;
           String paymentStatus = '';
 
@@ -84,9 +79,7 @@ class _LoginScreenState extends State<LoginScreen>
             paymentStatus = subscription['paymentStatus'] ?? '';
           }
 
-          // If account is inactive or payment was rejected, prevent login
           if (!isActive || paymentStatus == 'rejected') {
-            // Sign out the user since we don't want them to proceed
             await _auth.signOut();
 
             setState(() {
@@ -104,7 +97,6 @@ class _LoginScreenState extends State<LoginScreen>
             return false;
           }
 
-          // Check if subscription has expired
           if (userData.containsKey('subscription') &&
               userData['subscription'] is Map<String, dynamic>) {
             Map<String, dynamic> subscription =
@@ -116,13 +108,11 @@ class _LoginScreenState extends State<LoginScreen>
               DateTime endDate = endTimestamp.toDate();
 
               if (DateTime.now().isAfter(endDate)) {
-                // Subscription has expired
                 await _firestore.collection('users').doc(userId).update({
                   'isAccountActive': false,
                   'subscription.status': 'expired'
                 });
 
-                // Sign out the user
                 await _auth.signOut();
 
                 setState(() {
@@ -135,7 +125,6 @@ class _LoginScreenState extends State<LoginScreen>
           }
         }
 
-        // For all other users, or approved owners, allow login
         return true;
       }
     }
@@ -156,7 +145,6 @@ class _LoginScreenState extends State<LoginScreen>
       await _auth.sendPasswordResetEmail(email: email);
       EasyLoading.dismiss();
 
-      // Show success dialog
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
@@ -189,12 +177,11 @@ class _LoginScreenState extends State<LoginScreen>
   }
 
   final GoogleSignIn _googleSignIn = GoogleSignIn();
-// Add this method to your _LoginScreenState class
+
   Future<void> _signInWithGoogle() async {
     try {
       EasyLoading.show(status: 'Signing in with Google...');
 
-      // Force account selection every time
       await _googleSignIn.signOut();
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
 
@@ -219,25 +206,22 @@ class _LoginScreenState extends State<LoginScreen>
       final String userId = userCredential.user?.uid ?? '';
 
       if (isNewUser) {
-        // New user - set default role to 'user'
         await _firestore.collection('users').doc(userId).set({
           'email': userCredential.user?.email,
           'name': userCredential.user?.displayName,
-          'role': 'user', // Default role for new users
+          'role': 'user',
           'isAccountActive': true,
           'createdAt': FieldValue.serverTimestamp(),
           'authProvider': 'google',
         });
       }
 
-      // Get user document to determine role
       final userDoc = await _firestore.collection('users').doc(userId).get();
       final String role = userDoc.exists
           ? (userDoc.data()?['role'] as String?) ?? 'user'
           : 'user';
       EasyLoading.dismiss();
 
-      // Navigate to HomePage with the determined role
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
@@ -282,7 +266,6 @@ class _LoginScreenState extends State<LoginScreen>
         password: password,
       );
 
-      // Verify account status
       bool isAccountValid = await _verifyAccountStatus(userCredential);
 
       EasyLoading.dismiss();
@@ -299,7 +282,6 @@ class _LoginScreenState extends State<LoginScreen>
             final userData = userDoc.data();
             final role = userData?['role'] ?? 'user';
 
-            // Navigate to HomePage with role
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(
@@ -314,7 +296,6 @@ class _LoginScreenState extends State<LoginScreen>
           }
         }
       } else {
-        // _loginError is set in _verifyAccountStatus method
         setState(() {
           _isLoading = false;
         });
@@ -443,8 +424,6 @@ class _LoginScreenState extends State<LoginScreen>
                               ),
                             ),
                             const SizedBox(height: 40),
-
-                            // Login error message
                             if (_loginError != null) ...[
                               Container(
                                 padding: EdgeInsets.all(16),
@@ -473,7 +452,6 @@ class _LoginScreenState extends State<LoginScreen>
                               ),
                               const SizedBox(height: 20),
                             ],
-
                             Container(
                               padding: EdgeInsets.all(24),
                               decoration: BoxDecoration(
@@ -637,7 +615,7 @@ class _LoginScreenState extends State<LoginScreen>
                             Column(
                               children: [
                                 Text(
-                                  "Or continue with",
+                                  "Or sign in with",
                                   style: TextStyle(
                                     color: Colors.white,
                                     fontSize: 16,
@@ -645,30 +623,37 @@ class _LoginScreenState extends State<LoginScreen>
                                   ),
                                 ),
                                 const SizedBox(height: 16),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    _buildSocialButton(
-                                      icon: Icons.g_mobiledata,
-                                      color: Colors.white,
-                                      backgroundColor: Colors.red,
-                                      onPressed: _signInWithGoogle,
+                                SizedBox(
+                                  width: double.infinity,
+                                  height: 56,
+                                  child: ElevatedButton(
+                                    onPressed: _signInWithGoogle,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.white,
+                                      foregroundColor: Colors.black87,
+                                      elevation: 2,
+                                      shadowColor:
+                                          Colors.black.withOpacity(0.3),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
                                     ),
-                                    const SizedBox(width: 16),
-                                    _buildSocialButton(
-                                      icon: Icons.apple,
-                                      color: Colors.white,
-                                      backgroundColor: Colors.black,
-                                      onPressed: () {},
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Icon(Icons.g_mobiledata, size: 28),
+                                        SizedBox(width: 12),
+                                        Text(
+                                          "Sign in with Google",
+                                          style: TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
                                     ),
-                                    const SizedBox(width: 16),
-                                    _buildSocialButton(
-                                      icon: Icons.facebook,
-                                      color: Colors.white,
-                                      backgroundColor: Colors.blue[800]!,
-                                      onPressed: () {},
-                                    ),
-                                  ],
+                                  ),
                                 ),
                               ],
                             ),
@@ -779,44 +764,6 @@ class _LoginScreenState extends State<LoginScreen>
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(16),
             borderSide: BorderSide(color: Color(0xFF2E86DE), width: 1.5),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSocialButton({
-    required IconData icon,
-    required Color color,
-    required Color backgroundColor,
-    required VoidCallback onPressed,
-  }) {
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 8,
-            offset: Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Material(
-        color: backgroundColor,
-        borderRadius: BorderRadius.circular(14),
-        child: InkWell(
-          onTap: onPressed,
-          borderRadius: BorderRadius.circular(14),
-          child: Container(
-            padding: EdgeInsets.all(12),
-            width: 52,
-            height: 52,
-            child: Icon(
-              icon,
-              color: color,
-              size: 28,
-            ),
           ),
         ),
       ),

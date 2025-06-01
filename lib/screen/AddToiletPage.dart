@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:geocoding/geocoding.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
@@ -6,6 +7,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'dart:io';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+
+const kGoogleApiKey = "AIzaSyB_1TttxzM-sGczqBngxWWutQLAdYYRx1E";
 
 class AddToiletPage extends StatefulWidget {
   final bool isEditing;
@@ -26,7 +31,10 @@ class AddToiletPage extends StatefulWidget {
 class _AddToiletPageState extends State<AddToiletPage> {
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _toiletNameController = TextEditingController();
+  final TextEditingController _addressController = TextEditingController();
+  final TextEditingController _searchController = TextEditingController();
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final ImagePicker _imagePicker = ImagePicker();
 
   LatLng? _selectedLocation;
@@ -34,6 +42,15 @@ class _AddToiletPageState extends State<AddToiletPage> {
   List<File> _selectedImages = [];
   List<String> _existingImageUrls = [];
   bool _isUploading = false;
+  GoogleMapController? _mapController;
+  List<PlacePrediction> _placePredictions = [];
+  bool _isSearching = false;
+  FocusNode _searchFocusNode = FocusNode();
+  BitmapDescriptor? _customMarker;
+  int _toiletLimit = 0;
+  int _currentToiletCount = 0;
+  bool _isCheckingLimit = true;
+  bool _hasSubscription = false;
 
   final List<Map<String, dynamic>> amenities = [
     {"name": "Accessible", "icon": Icons.accessible, "color": Colors.blue},
@@ -56,29 +73,98 @@ class _AddToiletPageState extends State<AddToiletPage> {
   void initState() {
     super.initState();
     _getCurrentUser();
+    _initCustomMarker();
+    _checkToiletLimit();
 
-    // If editing, populate the form with existing data
     if (widget.isEditing && widget.toiletData != null) {
       _populateFormWithExistingData();
     }
   }
 
+  Future<void> _checkToiletLimit() async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      setState(() {
+        _isCheckingLimit = false;
+      });
+      return;
+    }
+
+    try {
+      final userDoc = await _firestore.collection('users').doc(user.uid).get();
+      if (userDoc.exists) {
+        final userData = userDoc.data() as Map<String, dynamic>;
+        final role = userData['role'] as String?;
+
+        if (role == 'Owner') {
+          final subscription =
+              userData['subscription'] as Map<String, dynamic>?;
+          if (subscription != null) {
+            setState(() {
+              _hasSubscription = true;
+            });
+
+            final planId = subscription['planId'] as String?;
+
+            // Determine toilet limit based on plan
+            if (planId == 'basic') {
+              _toiletLimit = 2;
+            } else if (planId == 'standard') {
+              _toiletLimit = 5;
+            } else if (planId == 'premium') {
+              _toiletLimit = 9999; // Unlimited (practical limit)
+            }
+
+            // Get current toilet count
+            final toiletsQuery = await _firestore
+                .collection('toilets')
+                .where('ownerId', isEqualTo: user.uid)
+                .get();
+
+            setState(() {
+              _currentToiletCount = toiletsQuery.size;
+            });
+          }
+        } else {
+          // For non-owners, set unlimited
+          setState(() {
+            _toiletLimit = 9999;
+            _hasSubscription = true;
+          });
+        }
+      }
+    } catch (e) {
+      print('Error checking toilet limit: $e');
+    } finally {
+      setState(() {
+        _isCheckingLimit = false;
+      });
+    }
+  }
+
+  Future<void> _initCustomMarker() async {
+    _customMarker = await BitmapDescriptor.defaultMarkerWithHue(
+      BitmapDescriptor.hueRed,
+    );
+  }
+
   void _populateFormWithExistingData() {
     final data = widget.toiletData!;
 
-    // Set toilet name
     if (data['name'] != null) {
       _toiletNameController.text = data['name'];
     }
 
-    // Set selected amenities
+    if (data['address'] != null) {
+      _addressController.text = data['address'];
+    }
+
     if (data['amenities'] != null && data['amenities'] is List) {
       setState(() {
         selectedAmenities = Set<String>.from(data['amenities']);
       });
     }
 
-    // Set selected location
     if (data['location'] != null) {
       final location = data['location'];
       if (location['latitude'] != null && location['longitude'] != null) {
@@ -91,14 +177,12 @@ class _AddToiletPageState extends State<AddToiletPage> {
       }
     }
 
-    // Load existing images
     if (data['imageUrls'] != null && data['imageUrls'] is List) {
       setState(() {
         _existingImageUrls = List<String>.from(data['imageUrls']);
       });
     }
 
-    // If we're editing and there are no image URLs in the data, fetch the document to check again
     if (widget.isEditing &&
         widget.toiletId != null &&
         _existingImageUrls.isEmpty) {
@@ -108,10 +192,8 @@ class _AddToiletPageState extends State<AddToiletPage> {
 
   Future<void> _fetchToiletDataFromFirestore() async {
     try {
-      final docSnapshot = await FirebaseFirestore.instance
-          .collection('toilets')
-          .doc(widget.toiletId)
-          .get();
+      final docSnapshot =
+          await _firestore.collection('toilets').doc(widget.toiletId).get();
 
       if (docSnapshot.exists) {
         final data = docSnapshot.data() as Map<String, dynamic>;
@@ -129,16 +211,18 @@ class _AddToiletPageState extends State<AddToiletPage> {
   @override
   void dispose() {
     _toiletNameController.dispose();
+    _addressController.dispose();
+    _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
   void _getCurrentUser() {
-    // No need to set current user for editing, as we already have the data
-    // This is just for new toilet creation
     if (!widget.isEditing) {
       final user = _auth.currentUser;
       if (user == null) {
-        // Handle not logged in case
+        _showSnackBar(
+            'You must be logged in to add a toilet', Colors.red, Icons.error);
       }
     }
   }
@@ -146,12 +230,192 @@ class _AddToiletPageState extends State<AddToiletPage> {
   void _selectLocation(LatLng position) {
     setState(() {
       _selectedLocation = position;
+      _searchController.clear();
+      _placePredictions = [];
     });
 
     _showSnackBar(
-        'Location selected: (${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)})',
-        Colors.blue,
-        Icons.location_on);
+      'Location selected: (${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)})',
+      Colors.blue,
+      Icons.location_on,
+    );
+  }
+
+  Future<void> _searchPlaces(String input) async {
+    if (input.isEmpty) {
+      setState(() {
+        _placePredictions = [];
+      });
+      return;
+    }
+
+    setState(() {
+      _isSearching = true;
+    });
+
+    try {
+      final url = Uri.parse(
+          'https://maps.googleapis.com/maps/api/place/autocomplete/json?input=$input&key=$kGoogleApiKey&components=country:lk&types=establishment');
+
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['status'] == 'OK') {
+          setState(() {
+            _placePredictions = (data['predictions'] as List)
+                .map((p) => PlacePrediction.fromJson(p))
+                .toList();
+          });
+        } else {
+          print('Places API error: ${data['status']}');
+        }
+      } else {
+        print('HTTP error: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error searching places: $e');
+      _showSnackBar('Error searching places: $e', Colors.red, Icons.error);
+    } finally {
+      setState(() {
+        _isSearching = false;
+      });
+    }
+  }
+
+  Future<void> _handleSearch() async {
+    if (_searchController.text.isEmpty) return;
+
+    if (_placePredictions.isNotEmpty) {
+      final firstPrediction = _placePredictions.first;
+      await _getPlaceDetails(firstPrediction.placeId!);
+      return;
+    }
+
+    await _geocodeAddress(_searchController.text);
+  }
+
+  Future<void> _geocodeAddress(String address) async {
+    setState(() {
+      _isSearching = true;
+    });
+
+    try {
+      final url = Uri.parse(
+          'https://maps.googleapis.com/maps/api/geocode/json?address=$address&key=$kGoogleApiKey');
+
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['status'] == 'OK' && data['results'].isNotEmpty) {
+          final result = data['results'][0];
+          final geometry = result['geometry'];
+          final location = geometry['location'];
+          final lat = location['lat'];
+          final lng = location['lng'];
+          final address = result['formatted_address'];
+
+          setState(() {
+            _selectedLocation = LatLng(lat, lng);
+            _addressController.text = address;
+            _searchController.text = address;
+          });
+
+          _mapController?.animateCamera(
+            CameraUpdate.newCameraPosition(
+              CameraPosition(
+                target: _selectedLocation!,
+                zoom: 16,
+              ),
+            ),
+          );
+
+          Future.delayed(Duration(milliseconds: 500), () {
+            if (_mapController != null && _selectedLocation != null) {
+              _mapController!
+                  .showMarkerInfoWindow(const MarkerId('selected-location'));
+            }
+          });
+
+          _showSnackBar(
+            'Location selected',
+            Colors.green,
+            Icons.check_circle,
+          );
+        } else {
+          _showSnackBar(
+            'Location not found',
+            Colors.orange,
+            Icons.warning,
+          );
+        }
+      }
+    } catch (e) {
+      _showSnackBar('Error searching location: $e', Colors.red, Icons.error);
+    } finally {
+      setState(() {
+        _isSearching = false;
+      });
+    }
+  }
+
+  Future<void> _getPlaceDetails(String placeId) async {
+    setState(() {
+      _isSearching = true;
+    });
+
+    try {
+      final url = Uri.parse(
+          'https://maps.googleapis.com/maps/api/place/details/json?place_id=$placeId&key=$kGoogleApiKey');
+
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['status'] == 'OK') {
+          final result = data['result'];
+          final geometry = result['geometry'];
+          final location = geometry['location'];
+          final lat = location['lat'];
+          final lng = location['lng'];
+          final name = result['name'] ?? 'Selected Location';
+          final address = result['formatted_address'] ?? '';
+
+          setState(() {
+            _selectedLocation = LatLng(lat, lng);
+            _addressController.text = address;
+            _placePredictions = [];
+            _searchController.text = address;
+          });
+
+          _mapController?.animateCamera(
+            CameraUpdate.newCameraPosition(
+              CameraPosition(
+                target: _selectedLocation!,
+                zoom: 16,
+              ),
+            ),
+          );
+
+          Future.delayed(Duration(milliseconds: 500), () {
+            if (_mapController != null && _selectedLocation != null) {
+              _mapController!
+                  .showMarkerInfoWindow(const MarkerId('selected-location'));
+            }
+          });
+
+          _showSnackBar(
+            'Location selected: $name',
+            Colors.green,
+            Icons.check_circle,
+          );
+        }
+      }
+    } catch (e) {
+      _showSnackBar('Error getting place details: $e', Colors.red, Icons.error);
+    } finally {
+      setState(() {
+        _isSearching = false;
+      });
+    }
   }
 
   Future<void> _getCurrentLocation() async {
@@ -184,8 +448,11 @@ class _AddToiletPageState extends State<AddToiletPage> {
       }
 
       if (permission == LocationPermission.deniedForever) {
-        _showSnackBar('Location permissions are permanently denied.',
-            Colors.red, Icons.error);
+        _showSnackBar(
+          'Location permissions are permanently denied.',
+          Colors.red,
+          Icons.error,
+        );
         setState(() {
           _isSubmitting = false;
         });
@@ -201,10 +468,34 @@ class _AddToiletPageState extends State<AddToiletPage> {
         _isSubmitting = false;
       });
 
+      _mapController?.animateCamera(
+        CameraUpdate.newLatLngZoom(_selectedLocation!, 15),
+      );
+
+      try {
+        List<Placemark> placemarks = await placemarkFromCoordinates(
+          position.latitude,
+          position.longitude,
+        );
+        if (placemarks.isNotEmpty) {
+          Placemark place = placemarks.first;
+          String address = [
+            place.name,
+            place.street,
+            place.locality,
+            place.administrativeArea
+          ].where((part) => part?.isNotEmpty ?? false).join(', ');
+          _addressController.text = address;
+        }
+      } catch (e) {
+        print('Error getting address: $e');
+      }
+
       _showSnackBar(
-          'Current location selected: (${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)})',
-          Colors.green,
-          Icons.my_location);
+        'Current location selected: (${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)})',
+        Colors.green,
+        Icons.my_location,
+      );
     } catch (e) {
       _showSnackBar('Error getting location: $e', Colors.red, Icons.error);
       setState(() {
@@ -216,8 +507,8 @@ class _AddToiletPageState extends State<AddToiletPage> {
   Future<void> _pickImages() async {
     try {
       final List<XFile> pickedFiles = await _imagePicker.pickMultiImage(
-        imageQuality: 85, // Compress images to reduce storage usage
-        maxWidth: 1200, // Limit max width
+        imageQuality: 85,
+        maxWidth: 1200,
       );
 
       if (pickedFiles.isNotEmpty) {
@@ -278,21 +569,16 @@ class _AddToiletPageState extends State<AddToiletPage> {
       }
 
       for (var imageFile in _selectedImages) {
-        // Create unique filename with timestamp and random suffix
         String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
         String fileName =
             'toilet_${widget.toiletId ?? timestamp}_${timestamp}_${uploadedUrls.length}.jpg';
 
-        // Reference to storage location
         Reference ref = FirebaseStorage.instance
             .ref()
             .child('toilet_images')
             .child(fileName);
 
-        // Upload file
         UploadTask uploadTask = ref.putFile(imageFile);
-
-        // Wait for upload to complete and get download URL
         TaskSnapshot taskSnapshot = await uploadTask;
         String downloadUrl = await taskSnapshot.ref.getDownloadURL();
 
@@ -332,12 +618,37 @@ class _AddToiletPageState extends State<AddToiletPage> {
   }
 
   Future<void> _submitForm() async {
-    if (_formKey.currentState!.validate() && _selectedLocation != null) {
+    if (_isCheckingLimit) {
+      _showSnackBar('Please wait while we verify your subscription...',
+          Colors.orange, Icons.warning);
+      return;
+    }
+
+    if (!_hasSubscription && !widget.isEditing) {
+      _showSnackBar('You need an active subscription to add toilets',
+          Colors.red, Icons.error);
+      return;
+    }
+
+    // Check toilet limit for new toilets (not editing)
+    if (!widget.isEditing && _currentToiletCount >= _toiletLimit) {
+      _showSnackBar(
+        'You have reached your toilet limit of $_toiletLimit for your subscription plan. Please upgrade to add more toilets.',
+        Colors.red,
+        Icons.error,
+      );
+      return;
+    }
+
+    if (_formKey.currentState!.validate() &&
+        _selectedLocation != null &&
+        _addressController.text.isNotEmpty) {
       setState(() {
         _isSubmitting = true;
       });
 
       final toiletName = _toiletNameController.text;
+      final address = _addressController.text;
       final user = _auth.currentUser;
 
       if (user == null && !widget.isEditing) {
@@ -350,18 +661,15 @@ class _AddToiletPageState extends State<AddToiletPage> {
       }
 
       try {
-        // Upload images first and get URLs
         List<String> uploadedImageUrls = await _uploadImages();
-
-        // Combine existing images (that weren't removed) with new uploaded images
         List<String> allImageUrls = [
           ..._existingImageUrls,
           ...uploadedImageUrls
         ];
 
-        // Data to save
         final toiletData = {
           'name': toiletName,
+          'address': address,
           'amenities': selectedAmenities.toList(),
           'location': {
             'latitude': _selectedLocation!.latitude,
@@ -370,63 +678,74 @@ class _AddToiletPageState extends State<AddToiletPage> {
           'imageUrls': allImageUrls,
         };
 
-        // If creating new toilet (not editing)
         if (!widget.isEditing) {
-          // Add additional fields for new toilet
           toiletData.addAll({
             'rating': 0.0,
             'timestamp': FieldValue.serverTimestamp(),
             'ownerId': user!.uid,
-            'ownerEmail':
-                user.email ?? '', // Add empty string fallback for null
+            'ownerEmail': user.email ?? '',
           });
 
-          // Create new document
-          await FirebaseFirestore.instance
-              .collection('toilets')
-              .add(toiletData);
+          await _firestore.collection('toilets').add(toiletData);
 
-          _showSnackBar('Toilet "$toiletName" added successfully!',
-              Colors.green, Icons.check_circle);
+          _showSnackBar(
+            'Toilet "$toiletName" added successfully!',
+            Colors.green,
+            Icons.check_circle,
+          );
 
-          // Clear form after submission
           _formKey.currentState!.reset();
           setState(() {
             _selectedLocation = null;
             selectedAmenities.clear();
             _selectedImages.clear();
             _existingImageUrls.clear();
+            _addressController.clear();
+            _searchController.clear();
+            _currentToiletCount++;
           });
-        }
-        // If editing existing toilet
-        else if (widget.toiletId != null) {
-          // Update existing document
-          await FirebaseFirestore.instance
+        } else if (widget.toiletId != null) {
+          await _firestore
               .collection('toilets')
               .doc(widget.toiletId)
               .update(toiletData);
 
-          _showSnackBar('Toilet "$toiletName" updated successfully!',
-              Colors.green, Icons.check_circle);
+          _showSnackBar(
+            'Toilet "$toiletName" updated successfully!',
+            Colors.green,
+            Icons.check_circle,
+          );
 
-          // Return to the previous screen after updating
           Future.delayed(Duration(seconds: 1), () {
             Navigator.pop(context);
           });
         }
       } catch (e) {
         _showSnackBar(
-            'Error ${widget.isEditing ? 'updating' : 'adding'} toilet: $e',
-            Colors.red,
-            Icons.error);
+          'Error ${widget.isEditing ? 'updating' : 'adding'} toilet: $e',
+          Colors.red,
+          Icons.error,
+        );
       } finally {
         setState(() {
           _isSubmitting = false;
         });
       }
-    } else if (_selectedLocation == null) {
-      _showSnackBar(
-          'Please select a location on the map.', Colors.orange, Icons.warning);
+    } else {
+      if (_selectedLocation == null) {
+        _showSnackBar(
+          'Please select a location on the map.',
+          Colors.orange,
+          Icons.warning,
+        );
+      }
+      if (_addressController.text.isEmpty) {
+        _showSnackBar(
+          'Please enter the toilet address.',
+          Colors.orange,
+          Icons.warning,
+        );
+      }
     }
   }
 
@@ -442,8 +761,6 @@ class _AddToiletPageState extends State<AddToiletPage> {
           ),
         ),
         SizedBox(height: 12),
-
-        // Show existing images (when editing)
         if (_existingImageUrls.isNotEmpty) ...[
           Text(
             'Existing Photos',
@@ -541,8 +858,6 @@ class _AddToiletPageState extends State<AddToiletPage> {
           ),
           SizedBox(height: 16),
         ],
-
-        // Show newly selected images
         if (_selectedImages.isNotEmpty) ...[
           Text(
             'New Photos',
@@ -606,8 +921,6 @@ class _AddToiletPageState extends State<AddToiletPage> {
           ),
           SizedBox(height: 16),
         ],
-
-        // Photo action buttons
         Row(
           children: [
             Expanded(
@@ -633,7 +946,6 @@ class _AddToiletPageState extends State<AddToiletPage> {
             ),
           ],
         ),
-
         if (_isUploading)
           Padding(
             padding: const EdgeInsets.only(top: 12),
@@ -668,15 +980,29 @@ class _AddToiletPageState extends State<AddToiletPage> {
       ),
       body: Column(
         children: [
-          // Map takes up top half of screen
+          if (_isCheckingLimit) LinearProgressIndicator(),
+          if (!_isCheckingLimit && !widget.isEditing && _toiletLimit != 9999)
+            Container(
+              padding: EdgeInsets.all(8),
+              color: Colors.blue[50],
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, color: Colors.blue),
+                  SizedBox(width: 8),
+                  Text(
+                    'Toilet limit: $_currentToiletCount/$_toiletLimit',
+                    style: TextStyle(color: Colors.blue[800]),
+                  ),
+                ],
+              ),
+            ),
           Expanded(
             flex: 5,
             child: Stack(
               children: [
                 GoogleMap(
                   initialCameraPosition: CameraPosition(
-                    target: _selectedLocation ??
-                        LatLng(7.8731, 80.7718), // Default to Sri Lanka
+                    target: _selectedLocation ?? LatLng(7.8731, 80.7718),
                     zoom: 12,
                   ),
                   onTap: _selectLocation,
@@ -687,20 +1013,124 @@ class _AddToiletPageState extends State<AddToiletPage> {
                             position: _selectedLocation!,
                             infoWindow: InfoWindow(
                               title: 'Selected Location',
-                              snippet:
-                                  '${_selectedLocation!.latitude.toStringAsFixed(5)}, ${_selectedLocation!.longitude.toStringAsFixed(5)}',
+                              snippet: _addressController.text.isNotEmpty
+                                  ? _addressController.text
+                                  : '${_selectedLocation!.latitude.toStringAsFixed(5)}, ${_selectedLocation!.longitude.toStringAsFixed(5)}',
                             ),
+                            icon: _customMarker ??
+                                BitmapDescriptor.defaultMarkerWithHue(
+                                  BitmapDescriptor.hueRed,
+                                ),
                           ),
                         }
                       : {},
                   myLocationEnabled: true,
-                  zoomControlsEnabled: true,
+                  myLocationButtonEnabled: false,
+                  zoomControlsEnabled: false,
+                  onMapCreated: (controller) {
+                    _mapController = controller;
+                  },
                 ),
-
-                // Location indicator overlay
+                Positioned(
+                  top: 16,
+                  left: 16,
+                  right: 16,
+                  child: Column(
+                    children: [
+                      Material(
+                        elevation: 4,
+                        borderRadius: BorderRadius.circular(8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: TextFormField(
+                                controller: _searchController,
+                                focusNode: _searchFocusNode,
+                                decoration: InputDecoration(
+                                  hintText: 'Search for a location...',
+                                  filled: true,
+                                  fillColor: Colors.white,
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                  contentPadding: EdgeInsets.symmetric(
+                                    vertical: 12,
+                                    horizontal: 16,
+                                  ),
+                                  suffixIcon: _isSearching
+                                      ? Padding(
+                                          padding: EdgeInsets.all(8),
+                                          child: SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(
+                                                strokeWidth: 2),
+                                          ),
+                                        )
+                                      : IconButton(
+                                          icon: Icon(Icons.clear),
+                                          onPressed: () {
+                                            _searchController.clear();
+                                            setState(() {
+                                              _placePredictions = [];
+                                            });
+                                          },
+                                        ),
+                                ),
+                                onChanged: _searchPlaces,
+                                onFieldSubmitted: (value) => _handleSearch(),
+                              ),
+                            ),
+                            IconButton(
+                              icon: Icon(Icons.search),
+                              onPressed: _handleSearch,
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (_placePredictions.isNotEmpty)
+                        Container(
+                          margin: EdgeInsets.only(top: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(8),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black26,
+                                blurRadius: 4,
+                                offset: Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxHeight:
+                                  MediaQuery.of(context).size.height * 0.3,
+                            ),
+                            child: ListView.builder(
+                              shrinkWrap: true,
+                              itemCount: _placePredictions.length,
+                              itemBuilder: (context, index) {
+                                final prediction = _placePredictions[index];
+                                return ListTile(
+                                  leading: Icon(Icons.location_on),
+                                  title: Text(prediction.description ?? ''),
+                                  onTap: () {
+                                    _getPlaceDetails(prediction.placeId!);
+                                    _searchFocusNode.unfocus();
+                                  },
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
                 if (_selectedLocation != null)
                   Positioned(
-                    top: 16,
+                    bottom: 16,
                     left: 16,
                     right: 16,
                     child: Container(
@@ -723,7 +1153,7 @@ class _AddToiletPageState extends State<AddToiletPage> {
                           SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              'Selected: (${_selectedLocation!.latitude.toStringAsFixed(5)}, ${_selectedLocation!.longitude.toStringAsFixed(5)})',
+                              'Selected: ${_addressController.text.isNotEmpty ? _addressController.text : '(${_selectedLocation!.latitude.toStringAsFixed(5)}, ${_selectedLocation!.longitude.toStringAsFixed(5)})'}',
                               style: TextStyle(fontSize: 12),
                             ),
                           ),
@@ -734,10 +1164,8 @@ class _AddToiletPageState extends State<AddToiletPage> {
               ],
             ),
           ),
-
-          // Form takes up bottom half
           Expanded(
-            flex: 6, // Increased flex to accommodate photo section
+            flex: 6,
             child: Container(
               decoration: BoxDecoration(
                 color: Colors.white,
@@ -760,7 +1188,6 @@ class _AddToiletPageState extends State<AddToiletPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Location button
                       ElevatedButton.icon(
                         onPressed: _isSubmitting ? null : _getCurrentLocation,
                         icon: Icon(Icons.my_location),
@@ -773,8 +1200,6 @@ class _AddToiletPageState extends State<AddToiletPage> {
                         ),
                       ),
                       SizedBox(height: 16),
-
-                      // Toilet name field
                       Text(
                         'Toilet Information',
                         style: TextStyle(
@@ -803,12 +1228,28 @@ class _AddToiletPageState extends State<AddToiletPage> {
                         },
                       ),
                       SizedBox(height: 16),
-
-                      // Photo upload section
+                      TextFormField(
+                        controller: _addressController,
+                        decoration: InputDecoration(
+                          labelText: 'Address',
+                          hintText: 'Enter the full address of the toilet',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          prefixIcon: Icon(Icons.location_on),
+                          filled: true,
+                          fillColor: Colors.grey[50],
+                        ),
+                        validator: (value) {
+                          if (value == null || value.isEmpty) {
+                            return 'Please enter the address';
+                          }
+                          return null;
+                        },
+                      ),
+                      SizedBox(height: 16),
                       _buildImageGrid(),
                       SizedBox(height: 16),
-
-                      // Amenities section
                       Text(
                         'Amenities',
                         style: TextStyle(
@@ -817,8 +1258,6 @@ class _AddToiletPageState extends State<AddToiletPage> {
                         ),
                       ),
                       SizedBox(height: 12),
-
-                      // Amenities wrap
                       Wrap(
                         spacing: 8,
                         runSpacing: 8,
@@ -878,10 +1317,7 @@ class _AddToiletPageState extends State<AddToiletPage> {
                           );
                         }).toList(),
                       ),
-
                       SizedBox(height: 24),
-
-                      // Submit button
                       ElevatedButton(
                         onPressed: (_isSubmitting || _isUploading)
                             ? null
@@ -925,6 +1361,20 @@ class _AddToiletPageState extends State<AddToiletPage> {
         child: Icon(Icons.my_location),
         tooltip: 'Get Current Location',
       ),
+    );
+  }
+}
+
+class PlacePrediction {
+  final String? description;
+  final String? placeId;
+
+  PlacePrediction({this.description, this.placeId});
+
+  factory PlacePrediction.fromJson(Map<String, dynamic> json) {
+    return PlacePrediction(
+      description: json['description'],
+      placeId: json['place_id'],
     );
   }
 }
