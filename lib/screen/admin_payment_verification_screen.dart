@@ -7,6 +7,7 @@ import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'dart:async';
 import 'package:photo_view/photo_view.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/services.dart';
 
 class AdminPaymentVerificationScreen extends StatefulWidget {
   @override
@@ -78,6 +79,47 @@ class _AdminPaymentVerificationScreenState
     }
   }
 
+  // Add this with other state variables
+  final Map<String, bool> _emailDeliveryStatus = {};
+
+// Add these new methods
+  Future<bool> _verifyEmailDelivery(
+      String userId, String notificationId) async {
+    try {
+      // Check delivery status every 2 seconds for up to 10 seconds
+      for (int i = 0; i < 5; i++) {
+        await Future.delayed(Duration(seconds: 2));
+
+        final doc = await _firestore
+            .collection('notifications')
+            .doc(notificationId)
+            .get();
+        if (doc.exists && doc.data()?['emailDelivered'] == true) {
+          return true;
+        }
+      }
+      return false;
+    } catch (e) {
+      print('Error verifying email delivery: $e');
+      return false;
+    }
+  }
+
+  void _showEmailDeliveryStatus(String userId, bool success) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(success
+            ? 'Email notification sent successfully'
+            : 'Email notification failed to send (queued for retry)'),
+        backgroundColor: success ? Colors.green : Colors.orange,
+        duration: Duration(seconds: 3),
+      ),
+    );
+    setState(() {
+      _emailDeliveryStatus[userId] = success;
+    });
+  }
+
   Future<void> _ensureNotificationsCollectionExists() async {
     try {
       await _firestore.collection('notifications').limit(1).get();
@@ -112,16 +154,37 @@ class _AdminPaymentVerificationScreenState
       String userEmail, String subject, String message) async {
     try {
       final HttpsCallable callable =
-          _functions.httpsCallable('sendEmailNotification');
+      _functions.httpsCallable('sendEmailNotification');
       await callable.call({
         'email': userEmail,
         'subject': subject,
         'message': message,
         'type': 'payment_verification'
       });
+    } on PlatformException catch (e) {
+      print('Platform error sending email: ${e.message}');
+      await _queueEmailNotification(userEmail, subject, message);
     } catch (e) {
       print('Error sending email notification: $e');
-      _handleError('sending email notification', e);
+      await _queueEmailNotification(userEmail, subject, message);
+    }
+  }
+
+  Future<void> _queueEmailNotification(
+      String userEmail, String subject, String message) async {
+    try {
+      await _firestore.collection('email_queue').add({
+        'email': userEmail,
+        'subject': subject,
+        'message': message,
+        'type': 'payment_verification',
+        'createdAt': FieldValue.serverTimestamp(),
+        'attempts': 0,
+        'status': 'pending'
+      });
+    } catch (e) {
+      print('Failed to queue email: $e');
+      _handleError('queueing email notification', e);
     }
   }
 
@@ -183,7 +246,6 @@ class _AdminPaymentVerificationScreenState
         if (data.containsKey('subscription')) {
           Map<String, dynamic> subscription = data['subscription'];
 
-          // Format the creation date for display
           String formattedDate = 'Unknown date';
           if (data['createdAt'] != null) {
             formattedDate = DateFormat('MMM d, yyyy - h:mm a')
@@ -256,7 +318,7 @@ class _AdminPaymentVerificationScreenState
       });
 
       DocumentReference historyRef =
-          _firestore.collection('paymentHistory').doc();
+      _firestore.collection('paymentHistory').doc();
       batch.set(historyRef, {
         'userId': userId,
         'amount': price,
@@ -269,12 +331,12 @@ class _AdminPaymentVerificationScreenState
       });
 
       DocumentReference notificationRef =
-          _firestore.collection('notifications').doc();
+      _firestore.collection('notifications').doc();
       batch.set(notificationRef, {
         'userId': userId,
         'type': 'payment_approved',
         'message':
-            'Your payment for $planName plan has been approved. Your subscription is now active until ${DateFormat('MMM d, yyyy').format(endDate)}.',
+        'Your payment for $planName plan has been approved. Your subscription is now active until ${DateFormat('MMM d, yyyy').format(endDate)}.',
         'createdAt': FieldValue.serverTimestamp(),
         'read': false
       });
@@ -287,7 +349,6 @@ class _AdminPaymentVerificationScreenState
         'notificationId': notificationRef.id
       });
 
-      // Enhanced email notification
       String emailSubject = 'Payment Approved - Subscription Activated';
       String emailMessage = '''
 Dear Valued Customer,
@@ -350,7 +411,7 @@ The Support Team
       });
 
       DocumentReference historyRef =
-          _firestore.collection('paymentHistory').doc();
+      _firestore.collection('paymentHistory').doc();
       batch.set(historyRef, {
         'userId': userId,
         'status': 'rejected',
@@ -360,7 +421,7 @@ The Support Team
       });
 
       DocumentReference notificationRef =
-          _firestore.collection('notifications').doc();
+      _firestore.collection('notifications').doc();
       batch.set(notificationRef, {
         'userId': userId,
         'type': 'payment_rejected',
@@ -373,7 +434,6 @@ The Support Team
       _logAction('reject_payment_success', userId,
           {'reason': reason, 'notificationId': notificationRef.id});
 
-      // Enhanced rejection email
       String emailSubject = 'Payment Rejected - Action Required';
       String emailMessage = '''
 Dear Customer,
@@ -433,7 +493,7 @@ The Support Team
       });
 
       DocumentReference historyRef =
-          _firestore.collection('paymentHistory').doc();
+      _firestore.collection('paymentHistory').doc();
       batch.set(historyRef, {
         'userId': userId,
         'action': 'verification_deleted',
@@ -443,7 +503,7 @@ The Support Team
       });
 
       DocumentReference notificationRef =
-          _firestore.collection('notifications').doc();
+      _firestore.collection('notifications').doc();
       batch.set(notificationRef, {
         'userId': userId,
         'type': 'payment_verification_deleted',
@@ -592,17 +652,17 @@ The Support Team
     CachedNetworkImageProvider(imageUrl)
         .resolve(ImageConfiguration())
         .addListener(
-          ImageStreamListener(
+      ImageStreamListener(
             (info, _) {
-              EasyLoading.dismiss();
-              _showPaymentProofDialog(imageUrl, userName, planName, price);
-            },
-            onError: (exception, stackTrace) {
-              EasyLoading.dismiss();
-              _handleError('loading payment slip', exception);
-            },
-          ),
-        );
+          EasyLoading.dismiss();
+          _showPaymentProofDialog(imageUrl, userName, planName, price);
+        },
+        onError: (exception, stackTrace) {
+          EasyLoading.dismiss();
+          _handleError('loading payment slip', exception);
+        },
+      ),
+    );
   }
 
   void _showPaymentProofDialog(
@@ -760,10 +820,9 @@ The Support Team
                       ),
                       onPressed: () {
                         Navigator.pop(context);
-                        // Find the payment in our list
                         final payment = _pendingPayments.firstWhere(
-                          (p) =>
-                              p['name'] == userName &&
+                              (p) =>
+                          p['name'] == userName &&
                               p['planName'] == planName,
                           orElse: () => {},
                         );
@@ -786,10 +845,9 @@ The Support Team
                       ),
                       onPressed: () {
                         Navigator.pop(context);
-                        // Find the payment in our list
                         final payment = _pendingPayments.firstWhere(
-                          (p) =>
-                              p['name'] == userName &&
+                              (p) =>
+                          p['name'] == userName &&
                               p['planName'] == planName,
                           orElse: () => {},
                         );
@@ -934,25 +992,25 @@ The Support Team
             child: _isLoading
                 ? Center(child: CircularProgressIndicator())
                 : _filteredPayments.isEmpty
-                    ? Center(
-                        child: Text(
-                          'No payment records found',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                      )
-                    : RefreshIndicator(
-                        onRefresh: _loadPendingPayments,
-                        child: ListView.builder(
-                          itemCount: _filteredPayments.length,
-                          itemBuilder: (context, index) {
-                            final payment = _filteredPayments[index];
-                            return _buildPaymentCard(payment);
-                          },
-                        ),
-                      ),
+                ? Center(
+              child: Text(
+                'No payment records found',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: Colors.grey[600],
+                ),
+              ),
+            )
+                : RefreshIndicator(
+              onRefresh: _loadPendingPayments,
+              child: ListView.builder(
+                itemCount: _filteredPayments.length,
+                itemBuilder: (context, index) {
+                  final payment = _filteredPayments[index];
+                  return _buildPaymentCard(payment);
+                },
+              ),
+            ),
           ),
         ],
       ),
@@ -1112,12 +1170,12 @@ The Support Team
                                     SizedBox(height: 8),
                                     Padding(
                                       padding:
-                                          EdgeInsets.symmetric(horizontal: 8),
+                                      EdgeInsets.symmetric(horizontal: 8),
                                       child: Text(
                                         'Could not load payment slip',
                                         textAlign: TextAlign.center,
                                         style:
-                                            TextStyle(color: Colors.red[700]),
+                                        TextStyle(color: Colors.red[700]),
                                       ),
                                     ),
                                   ],
@@ -1202,7 +1260,7 @@ The Support Team
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Color(0xFF2E86DE),
                         padding:
-                            EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       ),
                     ),
                   ),
@@ -1256,12 +1314,12 @@ The Support Team
                           children: [
                             Expanded(
                               child: ElevatedButton(
-                                onPressed: () {
+                                onPressed: () async {
                                   if (payment['paymentStatus'] == 'approved') {
                                     _showRejectDialog(
                                         payment['userId'], payment['email']);
                                   } else {
-                                    _approvePayment(
+                                    await _approvePayment(
                                       payment['userId'],
                                       payment['planPrice'],
                                       payment['planName'],
@@ -1272,9 +1330,9 @@ The Support Team
                                 },
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor:
-                                      payment['paymentStatus'] == 'approved'
-                                          ? Colors.red.withOpacity(0.8)
-                                          : Colors.green,
+                                  payment['paymentStatus'] == 'approved'
+                                      ? Colors.red.withOpacity(0.8)
+                                      : Colors.green,
                                   padding: EdgeInsets.symmetric(vertical: 12),
                                 ),
                                 child: Text(
@@ -1323,9 +1381,9 @@ The Support Team
 
       List<Map<String, dynamic>> recentNotifications = snapshot.docs
           .map((doc) => {
-                'id': doc.id,
-                ...doc.data() as Map<String, dynamic>,
-              })
+        'id': doc.id,
+        ...doc.data() as Map<String, dynamic>,
+      })
           .toList();
 
       EasyLoading.dismiss();
@@ -1348,8 +1406,8 @@ The Support Team
                   title: Text(notification['message'] ?? 'No message'),
                   subtitle: Text(
                       'User ID: ${notification['userId'] ?? 'Unknown'}\n'
-                      'Type: ${notification['type'] ?? 'Unknown'}\n'
-                      'Date: ${createdAt != null ? DateFormat('MMM d, yyyy • h:mm a').format(createdAt) : 'Unknown'}'),
+                          'Type: ${notification['type'] ?? 'Unknown'}\n'
+                          'Date: ${createdAt != null ? DateFormat('MMM d, yyyy • h:mm a').format(createdAt) : 'Unknown'}'),
                   trailing: notification['read'] == true
                       ? Icon(Icons.check_circle, color: Colors.green)
                       : Icon(Icons.circle, color: Colors.red),

@@ -9,7 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import 'dart:math' as math;
 import 'package:geocoding/geocoding.dart';
 import 'MapSelectionPage.dart';
-import 'notification_service.dart';
+import 'admin_notifications_page.dart';
 
 class LatLng {
   final double latitude;
@@ -30,7 +30,6 @@ class AddCommentPage extends StatefulWidget {
 
 class _AddCommentPageState extends State<AddCommentPage> {
   final TextEditingController _commentController = TextEditingController();
-  final NotificationService _notificationService = NotificationService();
   final currentUser = FirebaseAuth.instance.currentUser;
   File? _selectedImage;
   final ImagePicker _picker = ImagePicker();
@@ -379,12 +378,6 @@ class _AddCommentPageState extends State<AddCommentPage> {
       // Add at the top
 
 // After successful review submission
-      await _notificationService.createNotification(
-        userId: currentUser?.uid ?? "anonymous",
-        message: 'Your review for ${widget.toiletName} has been posted',
-        type: 'review',
-        relatedPage: 'comments',
-      );
 
       await _updateToiletRating();
       _showSnackBar("Review added successfully!", Colors.green);

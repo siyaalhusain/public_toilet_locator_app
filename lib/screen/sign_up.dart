@@ -160,6 +160,33 @@ class _SignUpState extends State<SignUp> with SingleTickerProviderStateMixin {
     }
   }
 
+// Add this method to _SignUpState class in sign_up.dart
+  Future<void> _sendAdminNotification(String userName, String userEmail) async {
+    try {
+      // Get all admin users
+      final admins = await _firestore
+          .collection('users')
+          .where('role', isEqualTo: 'Admin')
+          .get();
+
+      // Create a notification for each admin
+      for (var admin in admins.docs) {
+        await _firestore.collection('notifications').add({
+          'userId': admin.id,
+          'title': 'New Owner Registration',
+          'message':
+              '$userName ($userEmail) has registered as an Owner and needs payment verification.',
+          'type': 'new_owner',
+          'isRead': false,
+          'createdAt': FieldValue.serverTimestamp(),
+          'relatedUserId': _auth.currentUser?.uid,
+        });
+      }
+    } catch (e) {
+      print('Error sending admin notification: $e');
+    }
+  }
+
   // Show waiting dialog after successful owner signup
   void _showWaitingDialog() {
     showDialog(
@@ -536,6 +563,7 @@ class _SignUpState extends State<SignUp> with SingleTickerProviderStateMixin {
             },
             'isAccountActive': false, // Needs payment verification
           });
+          await _sendAdminNotification(name, email);
 
           setState(() {
             _isLoading = false;
