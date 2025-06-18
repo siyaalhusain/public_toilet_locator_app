@@ -9,8 +9,10 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:async'; // Added for Timer
 
-const kGoogleApiKey = "AIzaSyB_1TttxzM-sGczqBngxWWutQLAdYYRx1E";
+const kGoogleApiKey =
+    'AIzaSyC3AXw-RcPsAR5s9Cgr84chOLDYT575ZM4'; // Replace with your actual API key
 
 class AddToiletPage extends StatefulWidget {
   final bool isEditing;
@@ -51,6 +53,7 @@ class _AddToiletPageState extends State<AddToiletPage> {
   int _currentToiletCount = 0;
   bool _isCheckingLimit = true;
   bool _hasSubscription = false;
+  Timer? _debounceTimer;
 
   final List<Map<String, dynamic>> amenities = [
     {"name": "Accessible", "icon": Icons.accessible, "color": Colors.blue},
@@ -106,16 +109,14 @@ class _AddToiletPageState extends State<AddToiletPage> {
 
             final planId = subscription['planId'] as String?;
 
-            // Determine toilet limit based on plan
             if (planId == 'basic') {
               _toiletLimit = 2;
             } else if (planId == 'standard') {
               _toiletLimit = 5;
             } else if (planId == 'premium') {
-              _toiletLimit = 9999; // Unlimited (practical limit)
+              _toiletLimit = 9999;
             }
 
-            // Get current toilet count
             final toiletsQuery = await _firestore
                 .collection('toilets')
                 .where('ownerId', isEqualTo: user.uid)
@@ -126,7 +127,6 @@ class _AddToiletPageState extends State<AddToiletPage> {
             });
           }
         } else {
-          // For non-owners, set unlimited
           setState(() {
             _toiletLimit = 9999;
             _hasSubscription = true;
@@ -214,6 +214,7 @@ class _AddToiletPageState extends State<AddToiletPage> {
     _addressController.dispose();
     _searchController.dispose();
     _searchFocusNode.dispose();
+    _debounceTimer?.cancel();
     super.dispose();
   }
 
@@ -242,44 +243,57 @@ class _AddToiletPageState extends State<AddToiletPage> {
   }
 
   Future<void> _searchPlaces(String input) async {
-    if (input.isEmpty) {
-      setState(() {
-        _placePredictions = [];
-      });
-      return;
-    }
+    if (_debounceTimer?.isActive ?? false) _debounceTimer?.cancel();
 
-    setState(() {
-      _isSearching = true;
-    });
-
-    try {
-      final url = Uri.parse(
-          'https://maps.googleapis.com/maps/api/place/autocomplete/json?input=$input&key=$kGoogleApiKey&components=country:lk&types=establishment');
-
-      final response = await http.get(url);
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        if (data['status'] == 'OK') {
-          setState(() {
-            _placePredictions = (data['predictions'] as List)
-                .map((p) => PlacePrediction.fromJson(p))
-                .toList();
-          });
-        } else {
-          print('Places API error: ${data['status']}');
-        }
-      } else {
-        print('HTTP error: ${response.statusCode}');
+    _debounceTimer = Timer(const Duration(milliseconds: 500), () async {
+      if (input.isEmpty) {
+        setState(() {
+          _placePredictions = [];
+        });
+        return;
       }
-    } catch (e) {
-      print('Error searching places: $e');
-      _showSnackBar('Error searching places: $e', Colors.red, Icons.error);
-    } finally {
+
       setState(() {
-        _isSearching = false;
+        _isSearching = true;
       });
-    }
+
+      try {
+        final url = Uri.parse(
+            'https://maps.googleapis.com/maps/api/place/autocomplete/json?input=$input&key=$kGoogleApiKey&components=country:lk');
+
+        final response = await http.get(url);
+        if (response.statusCode == 200) {
+          final data = json.decode(response.body);
+          if (data['status'] == 'OK') {
+            setState(() {
+              _placePredictions = (data['predictions'] as List)
+                  .map((p) => PlacePrediction.fromJson(p))
+                  .toList();
+            });
+          } else {
+            print('Places API error: ${data['status']}');
+            setState(() {
+              _placePredictions = [];
+            });
+          }
+        } else {
+          print('HTTP error: ${response.statusCode}');
+          setState(() {
+            _placePredictions = [];
+          });
+        }
+      } catch (e) {
+        print('Error searching places: $e');
+        _showSnackBar('Error searching places: $e', Colors.red, Icons.error);
+        setState(() {
+          _placePredictions = [];
+        });
+      } finally {
+        setState(() {
+          _isSearching = false;
+        });
+      }
+    });
   }
 
   Future<void> _handleSearch() async {
@@ -301,7 +315,7 @@ class _AddToiletPageState extends State<AddToiletPage> {
 
     try {
       final url = Uri.parse(
-          'https://maps.googleapis.com/maps/api/geocode/json?address=$address&key=$kGoogleApiKey');
+          'https://maps.googleapis.com/maps/api/geocode/json?address=${Uri.encodeComponent(address)}&key=$kGoogleApiKey');
 
       final response = await http.get(url);
       if (response.statusCode == 200) {
@@ -310,14 +324,15 @@ class _AddToiletPageState extends State<AddToiletPage> {
           final result = data['results'][0];
           final geometry = result['geometry'];
           final location = geometry['location'];
-          final lat = location['lat'];
-          final lng = location['lng'];
-          final address = result['formatted_address'];
+          final lat = location['lat'] as double;
+          final lng = location['lng'] as double;
+          final formattedAddress = result['formatted_address'] as String;
 
           setState(() {
             _selectedLocation = LatLng(lat, lng);
-            _addressController.text = address;
-            _searchController.text = address;
+            _addressController.text = formattedAddress;
+            _searchController.text = formattedAddress;
+            _placePredictions = [];
           });
 
           _mapController?.animateCamera(
@@ -329,15 +344,8 @@ class _AddToiletPageState extends State<AddToiletPage> {
             ),
           );
 
-          Future.delayed(Duration(milliseconds: 500), () {
-            if (_mapController != null && _selectedLocation != null) {
-              _mapController!
-                  .showMarkerInfoWindow(const MarkerId('selected-location'));
-            }
-          });
-
           _showSnackBar(
-            'Location selected',
+            'Location selected: $formattedAddress',
             Colors.green,
             Icons.check_circle,
           );
@@ -348,6 +356,8 @@ class _AddToiletPageState extends State<AddToiletPage> {
             Icons.warning,
           );
         }
+      } else {
+        throw Exception('Failed to geocode address');
       }
     } catch (e) {
       _showSnackBar('Error searching location: $e', Colors.red, Icons.error);
@@ -374,10 +384,10 @@ class _AddToiletPageState extends State<AddToiletPage> {
           final result = data['result'];
           final geometry = result['geometry'];
           final location = geometry['location'];
-          final lat = location['lat'];
-          final lng = location['lng'];
-          final name = result['name'] ?? 'Selected Location';
-          final address = result['formatted_address'] ?? '';
+          final lat = location['lat'] as double;
+          final lng = location['lng'] as double;
+          final name = result['name'] as String? ?? 'Selected Location';
+          final address = result['formatted_address'] as String? ?? '';
 
           setState(() {
             _selectedLocation = LatLng(lat, lng);
@@ -394,13 +404,6 @@ class _AddToiletPageState extends State<AddToiletPage> {
               ),
             ),
           );
-
-          Future.delayed(Duration(milliseconds: 500), () {
-            if (_mapController != null && _selectedLocation != null) {
-              _mapController!
-                  .showMarkerInfoWindow(const MarkerId('selected-location'));
-            }
-          });
 
           _showSnackBar(
             'Location selected: $name',
@@ -630,7 +633,6 @@ class _AddToiletPageState extends State<AddToiletPage> {
       return;
     }
 
-    // Check toilet limit for new toilets (not editing)
     if (!widget.isEditing && _currentToiletCount >= _toiletLimit) {
       _showSnackBar(
         'You have reached your toilet limit of $_toiletLimit for your subscription plan. Please upgrade to add more toilets.',
@@ -1078,7 +1080,15 @@ class _AddToiletPageState extends State<AddToiletPage> {
                                           },
                                         ),
                                 ),
-                                onChanged: _searchPlaces,
+                                onChanged: (value) {
+                                  if (value.length > 2) {
+                                    _searchPlaces(value);
+                                  } else {
+                                    setState(() {
+                                      _placePredictions = [];
+                                    });
+                                  }
+                                },
                                 onFieldSubmitted: (value) => _handleSearch(),
                               ),
                             ),
@@ -1103,26 +1113,29 @@ class _AddToiletPageState extends State<AddToiletPage> {
                               ),
                             ],
                           ),
-                          child: ConstrainedBox(
-                            constraints: BoxConstraints(
-                              maxHeight:
-                                  MediaQuery.of(context).size.height * 0.3,
-                            ),
-                            child: ListView.builder(
-                              shrinkWrap: true,
-                              itemCount: _placePredictions.length,
-                              itemBuilder: (context, index) {
-                                final prediction = _placePredictions[index];
-                                return ListTile(
+                          constraints: BoxConstraints(
+                            maxHeight: MediaQuery.of(context).size.height * 0.3,
+                          ),
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            physics: AlwaysScrollableScrollPhysics(),
+                            itemCount: _placePredictions.length,
+                            itemBuilder: (context, index) {
+                              final prediction = _placePredictions[index];
+                              return Material(
+                                child: ListTile(
                                   leading: Icon(Icons.location_on),
                                   title: Text(prediction.description ?? ''),
                                   onTap: () {
                                     _getPlaceDetails(prediction.placeId!);
+                                    setState(() {
+                                      _placePredictions = [];
+                                    });
                                     _searchFocusNode.unfocus();
                                   },
-                                );
-                              },
-                            ),
+                                ),
+                              );
+                            },
                           ),
                         ),
                     ],
