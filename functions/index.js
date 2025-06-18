@@ -3,15 +3,39 @@ const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
 const cors = require('cors')({origin: true});
 admin.initializeApp();
+verifyEmailConfig().catch(console.error);
 
 // Configure email transport
+// Replace your current transporter configuration in index.js
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  service: "gmail",
   auth: {
     user: functions.config().gmail.email,
     pass: functions.config().gmail.password
-  }
+  },
+  pool: true,
+  maxConnections: 1,
+  rateDelta: 20000, // 20 seconds between emails
+  rateLimit: 5 // max 5 emails per rateDelta
 });
+
+// Add this helper function to verify your email config
+async function verifyEmailConfig() {
+  return new Promise((resolve, reject) => {
+    transporter.verify((error, success) => {
+      if (error) {
+        console.error('Email transport verification failed:', error);
+        reject(error);
+      } else {
+        console.log('Email transport is ready');
+        resolve(success);
+      }
+    });
+  });
+}
+
+// Call this at startup
+
 
 // Helper function to send emails
 async function sendEmail(to, subject, text) {
@@ -32,7 +56,43 @@ async function sendEmail(to, subject, text) {
     throw error;
   }
 }
+// Add this to your index.js
+exports.sendEmailNotification = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+  }
 
+  const { email, subject, message, type } = data;
+
+  try {
+    // First create a notification record
+    const notificationRef = admin.firestore().collection('notifications').doc();
+    await notificationRef.set({
+      userId: context.auth.uid,
+      type: type || 'generic_notification',
+      email: email,
+      subject: subject,
+      message: message,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      read: false,
+      emailDelivered: false // Initially false until confirmed
+    });
+
+    // Try to send the email
+    const emailSent = await sendEmail(email, subject, message);
+
+    // Update notification with delivery status
+    await notificationRef.update({
+      emailDelivered: emailSent,
+      deliveredAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    return { success: true, notificationId: notificationRef.id };
+  } catch (error) {
+    console.error('Error sending email notification:', error);
+    throw new functions.https.HttpsError('internal', 'Failed to send notification');
+  }
+});
 // Cloud Function to approve payment and send approval email
 exports.approvePayment = functions.https.onCall(async (data, context) => {
   if (!context.auth) {

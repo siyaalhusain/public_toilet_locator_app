@@ -9,6 +9,8 @@ import 'package:photo_view/photo_view.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/services.dart';
 
+//jful vvsn cmui ocwr
+//firebase functions:config:set gmail.email="siyaalhusain26@gmail.com" gmail.password="jful vvsn cmui ocwr"
 class AdminPaymentVerificationScreen extends StatefulWidget {
   @override
   _AdminPaymentVerificationScreenState createState() =>
@@ -153,20 +155,36 @@ class _AdminPaymentVerificationScreenState
   Future<void> _sendEmailNotification(
       String userEmail, String subject, String message) async {
     try {
+      EasyLoading.show(status: 'Sending email...');
+
       final HttpsCallable callable =
-      _functions.httpsCallable('sendEmailNotification');
-      await callable.call({
+          _functions.httpsCallable('sendEmailNotification');
+      final result = await callable.call({
         'email': userEmail,
         'subject': subject,
         'message': message,
         'type': 'payment_verification'
       });
+
+      // Verify delivery status
+      final notificationId = result.data['notificationId'];
+      if (notificationId != null) {
+        final deliveryVerified =
+            await _verifyEmailDelivery('admin', notificationId);
+        _showEmailDeliveryStatus('admin', deliveryVerified);
+      }
+
+      EasyLoading.dismiss();
     } on PlatformException catch (e) {
+      EasyLoading.dismiss();
       print('Platform error sending email: ${e.message}');
       await _queueEmailNotification(userEmail, subject, message);
+      _showEmailDeliveryStatus('admin', false);
     } catch (e) {
+      EasyLoading.dismiss();
       print('Error sending email notification: $e');
       await _queueEmailNotification(userEmail, subject, message);
+      _showEmailDeliveryStatus('admin', false);
     }
   }
 
@@ -318,7 +336,7 @@ class _AdminPaymentVerificationScreenState
       });
 
       DocumentReference historyRef =
-      _firestore.collection('paymentHistory').doc();
+          _firestore.collection('paymentHistory').doc();
       batch.set(historyRef, {
         'userId': userId,
         'amount': price,
@@ -331,12 +349,12 @@ class _AdminPaymentVerificationScreenState
       });
 
       DocumentReference notificationRef =
-      _firestore.collection('notifications').doc();
+          _firestore.collection('notifications').doc();
       batch.set(notificationRef, {
         'userId': userId,
         'type': 'payment_approved',
         'message':
-        'Your payment for $planName plan has been approved. Your subscription is now active until ${DateFormat('MMM d, yyyy').format(endDate)}.',
+            'Your payment for $planName plan has been approved. Your subscription is now active until ${DateFormat('MMM d, yyyy').format(endDate)}.',
         'createdAt': FieldValue.serverTimestamp(),
         'read': false
       });
@@ -411,7 +429,7 @@ The Support Team
       });
 
       DocumentReference historyRef =
-      _firestore.collection('paymentHistory').doc();
+          _firestore.collection('paymentHistory').doc();
       batch.set(historyRef, {
         'userId': userId,
         'status': 'rejected',
@@ -421,7 +439,7 @@ The Support Team
       });
 
       DocumentReference notificationRef =
-      _firestore.collection('notifications').doc();
+          _firestore.collection('notifications').doc();
       batch.set(notificationRef, {
         'userId': userId,
         'type': 'payment_rejected',
@@ -493,7 +511,7 @@ The Support Team
       });
 
       DocumentReference historyRef =
-      _firestore.collection('paymentHistory').doc();
+          _firestore.collection('paymentHistory').doc();
       batch.set(historyRef, {
         'userId': userId,
         'action': 'verification_deleted',
@@ -503,7 +521,7 @@ The Support Team
       });
 
       DocumentReference notificationRef =
-      _firestore.collection('notifications').doc();
+          _firestore.collection('notifications').doc();
       batch.set(notificationRef, {
         'userId': userId,
         'type': 'payment_verification_deleted',
@@ -652,17 +670,17 @@ The Support Team
     CachedNetworkImageProvider(imageUrl)
         .resolve(ImageConfiguration())
         .addListener(
-      ImageStreamListener(
+          ImageStreamListener(
             (info, _) {
-          EasyLoading.dismiss();
-          _showPaymentProofDialog(imageUrl, userName, planName, price);
-        },
-        onError: (exception, stackTrace) {
-          EasyLoading.dismiss();
-          _handleError('loading payment slip', exception);
-        },
-      ),
-    );
+              EasyLoading.dismiss();
+              _showPaymentProofDialog(imageUrl, userName, planName, price);
+            },
+            onError: (exception, stackTrace) {
+              EasyLoading.dismiss();
+              _handleError('loading payment slip', exception);
+            },
+          ),
+        );
   }
 
   void _showPaymentProofDialog(
@@ -821,8 +839,8 @@ The Support Team
                       onPressed: () {
                         Navigator.pop(context);
                         final payment = _pendingPayments.firstWhere(
-                              (p) =>
-                          p['name'] == userName &&
+                          (p) =>
+                              p['name'] == userName &&
                               p['planName'] == planName,
                           orElse: () => {},
                         );
@@ -846,8 +864,8 @@ The Support Team
                       onPressed: () {
                         Navigator.pop(context);
                         final payment = _pendingPayments.firstWhere(
-                              (p) =>
-                          p['name'] == userName &&
+                          (p) =>
+                              p['name'] == userName &&
                               p['planName'] == planName,
                           orElse: () => {},
                         );
@@ -992,25 +1010,25 @@ The Support Team
             child: _isLoading
                 ? Center(child: CircularProgressIndicator())
                 : _filteredPayments.isEmpty
-                ? Center(
-              child: Text(
-                'No payment records found',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.grey[600],
-                ),
-              ),
-            )
-                : RefreshIndicator(
-              onRefresh: _loadPendingPayments,
-              child: ListView.builder(
-                itemCount: _filteredPayments.length,
-                itemBuilder: (context, index) {
-                  final payment = _filteredPayments[index];
-                  return _buildPaymentCard(payment);
-                },
-              ),
-            ),
+                    ? Center(
+                        child: Text(
+                          'No payment records found',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                      )
+                    : RefreshIndicator(
+                        onRefresh: _loadPendingPayments,
+                        child: ListView.builder(
+                          itemCount: _filteredPayments.length,
+                          itemBuilder: (context, index) {
+                            final payment = _filteredPayments[index];
+                            return _buildPaymentCard(payment);
+                          },
+                        ),
+                      ),
           ),
         ],
       ),
@@ -1170,12 +1188,12 @@ The Support Team
                                     SizedBox(height: 8),
                                     Padding(
                                       padding:
-                                      EdgeInsets.symmetric(horizontal: 8),
+                                          EdgeInsets.symmetric(horizontal: 8),
                                       child: Text(
                                         'Could not load payment slip',
                                         textAlign: TextAlign.center,
                                         style:
-                                        TextStyle(color: Colors.red[700]),
+                                            TextStyle(color: Colors.red[700]),
                                       ),
                                     ),
                                   ],
@@ -1260,7 +1278,7 @@ The Support Team
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Color(0xFF2E86DE),
                         padding:
-                        EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                            EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       ),
                     ),
                   ),
@@ -1330,9 +1348,9 @@ The Support Team
                                 },
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor:
-                                  payment['paymentStatus'] == 'approved'
-                                      ? Colors.red.withOpacity(0.8)
-                                      : Colors.green,
+                                      payment['paymentStatus'] == 'approved'
+                                          ? Colors.red.withOpacity(0.8)
+                                          : Colors.green,
                                   padding: EdgeInsets.symmetric(vertical: 12),
                                 ),
                                 child: Text(
@@ -1381,9 +1399,9 @@ The Support Team
 
       List<Map<String, dynamic>> recentNotifications = snapshot.docs
           .map((doc) => {
-        'id': doc.id,
-        ...doc.data() as Map<String, dynamic>,
-      })
+                'id': doc.id,
+                ...doc.data() as Map<String, dynamic>,
+              })
           .toList();
 
       EasyLoading.dismiss();
@@ -1406,8 +1424,8 @@ The Support Team
                   title: Text(notification['message'] ?? 'No message'),
                   subtitle: Text(
                       'User ID: ${notification['userId'] ?? 'Unknown'}\n'
-                          'Type: ${notification['type'] ?? 'Unknown'}\n'
-                          'Date: ${createdAt != null ? DateFormat('MMM d, yyyy • h:mm a').format(createdAt) : 'Unknown'}'),
+                      'Type: ${notification['type'] ?? 'Unknown'}\n'
+                      'Date: ${createdAt != null ? DateFormat('MMM d, yyyy • h:mm a').format(createdAt) : 'Unknown'}'),
                   trailing: notification['read'] == true
                       ? Icon(Icons.check_circle, color: Colors.green)
                       : Icon(Icons.circle, color: Colors.red),
