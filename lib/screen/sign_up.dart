@@ -484,6 +484,7 @@ class _SignUpState extends State<SignUp> with SingleTickerProviderStateMixin {
     );
   }
 
+// Update the _signUp method in sign_up.dart
   void _signUp() async {
     final name = _nameController.text.trim();
     final email = _emailController.text.trim();
@@ -491,115 +492,162 @@ class _SignUpState extends State<SignUp> with SingleTickerProviderStateMixin {
     final confirmPassword = _confirmPasswordController.text.trim();
 
     // Basic validations
-    if (email.isEmpty ||
+    if (name.isEmpty ||
+        email.isEmpty ||
         password.isEmpty ||
-        name.isEmpty ||
         _selectedRole == null) {
-      _showSnackBar("Please fill all fields.");
+      _showSnackBar("Please fill all fields");
       return;
     }
 
     if (password != confirmPassword) {
-      _showSnackBar("Passwords do not match.");
+      _showSnackBar("Passwords don't match");
       return;
     }
 
     if (!_agreedToTerms) {
-      _showSnackBar("You must agree to the terms and conditions.");
+      _showSnackBar("You must agree to terms");
       return;
     }
 
-    // Check if owner has selected a plan
+    // Owner-specific validations
     if (_selectedRole == "Owner" && _selectedPlan == null) {
-      _showSnackBar("Please select a subscription plan.");
+      _showSnackBar("Please select a plan");
       return;
     }
 
-    // If role is Owner, check for payment slip
     if (_selectedRole == "Owner" &&
         _showPaymentOptions &&
         _paymentSlip == null) {
-      _showSnackBar("Please upload your payment receipt.");
+      _showSnackBar("Please upload payment slip");
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-    });
+    setState(() => _isLoading = true);
 
     try {
-      // Create user with Firebase Authentication
-      final UserCredential userCredential = await _auth
-          .createUserWithEmailAndPassword(email: email, password: password);
+      // Check for existing accounts
+      final emailQuery = await _firestore
+          .collection('users')
+          .where('email', isEqualTo: email)
+          .limit(1)
+          .get();
 
-      final userId = userCredential.user?.uid;
+      final existingUser =
+          emailQuery.docs.isNotEmpty ? emailQuery.docs.first : null;
+      final isInactiveOwner = existingUser != null &&
+          existingUser['role'] == 'Owner' &&
+          existingUser['isAccountActive'] == false;
 
-      if (userId != null) {
-        // For Owner role with subscription
-        if (_selectedRole == "Owner") {
-          String? paymentProofUrl;
-
-          // Upload payment slip
-          if (_showPaymentOptions) {
-            paymentProofUrl = await _uploadPaymentSlip();
-          }
-
-          // Save user details with subscription info to Firestore
-          await _firestore.collection('users').doc(userId).set({
-            'name': name,
-            'email': email,
-            'role': _selectedRole,
-            'createdAt': FieldValue.serverTimestamp(),
-            'subscription': {
-              'planId': _selectedPlan?.id,
-              'planName': _selectedPlan?.name,
-              'price': _selectedPlan?.price,
-              'duration': _selectedPlan?.duration,
-              'paymentStatus': 'pending',
-              'paymentMethod': 'bankTransfer',
-              'paymentProofUrl': paymentProofUrl,
-              'startDate': null, // Will be set when payment is verified
-              'endDate': null, // Will be set when payment is verified
-            },
-            'isAccountActive': false, // Needs payment verification
-          });
-          await _sendAdminNotification(name, email);
-
-          setState(() {
-            _isLoading = false;
-          });
-
-          // Only show one dialog to fix the issue with multiple dialogs
-          _showWaitingOptionsDialog();
-        } else {
-          // For regular User role
-          await _firestore.collection('users').doc(userId).set({
-            'name': name,
-            'email': email,
-            'role': _selectedRole,
-            'createdAt': FieldValue.serverTimestamp(),
-            'isAccountActive': true,
-          });
-
-          setState(() {
-            _isLoading = false;
-          });
-
-          _showSnackBar("Account created successfully!");
-          // Navigate to HomePage
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => HomePage(loggedInUserRole: _selectedRole!),
-            ),
-          );
-        }
+      // Block if active account exists
+      if (existingUser != null && !isInactiveOwner) {
+        _showSnackBar("Account already exists with this email");
+        setState(() => _isLoading = false);
+        return;
       }
+
+      // Handle renewal of inactive Owner
+      if (isInactiveOwner) {
+        if (_selectedRole != "Owner") {
+          _showSnackBar("Only Owner can renew this account");
+          setState(() => _isLoading = false);
+          return;
+        }
+
+        final paymentProofUrl =
+            _showPaymentOptions ? await _uploadPaymentSlip() : null;
+
+        await _firestore.collection('users').doc(existingUser.id).update({
+          'name': name,
+          'subscription': {
+            'planId': _selectedPlan?.id,
+            'planName': _selectedPlan?.name,
+            'price': _selectedPlan?.price,
+            'duration': _selectedPlan?.duration,
+            'paymentStatus': 'renew_pending',
+            'paymentMethod': 'bankTransfer',
+            'paymentProofUrl': paymentProofUrl,
+            'isRenewal': true,
+          },
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+
+        // Update password if changed
+        if (password.isNotEmpty) {
+          final user = await _auth.signInWithEmailAndPassword(
+            email: existingUser['email'],
+            password: password, // This will fail if password is different
+          );
+          await user.user!.updatePassword(password);
+        }
+
+        _showWaitingOptionsDialog();
+        return;
+      }
+
+      // Handle new signup
+      final userCredential = await _auth.createUserWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+
+      final userData = {
+        'name': name,
+        'email': email,
+        'role': _selectedRole,
+        'createdAt': FieldValue.serverTimestamp(),
+        'isAccountActive': _selectedRole != "Owner", // Owners need approval
+      };
+
+      if (_selectedRole == "Owner") {
+        final paymentProofUrl =
+            _showPaymentOptions ? await _uploadPaymentSlip() : null;
+
+        userData['subscription'] = {
+          'planId': _selectedPlan?.id,
+          'planName': _selectedPlan?.name,
+          'price': _selectedPlan?.price,
+          'duration': _selectedPlan?.duration,
+          'paymentStatus': 'pending',
+          'paymentMethod': 'bankTransfer',
+          'paymentProofUrl': paymentProofUrl,
+          'isRenewal': false,
+        };
+      }
+
+      await _firestore
+          .collection('users')
+          .doc(userCredential.user!.uid)
+          .set(userData);
+
+      if (_selectedRole == "Owner") {
+        await _sendAdminNotification(name, email);
+        _showWaitingOptionsDialog();
+      } else {
+        _showSnackBar("Account created!");
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => HomePage(loggedInUserRole: _selectedRole!),
+          ),
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'email-already-in-use') {
+        _showSnackBar("Account already exists with this email");
+      } else {
+        _showSnackBar("Error: ${e.message}");
+      }
+      try {
+        await _auth.currentUser?.delete(); // Clean up if created
+      } catch (_) {}
     } catch (e) {
-      setState(() {
-        _isLoading = false;
-      });
       _showSnackBar("Error: ${e.toString()}");
+      try {
+        await _auth.currentUser?.delete(); // Clean up if created
+      } catch (_) {}
+    } finally {
+      setState(() => _isLoading = false);
     }
   }
 

@@ -58,6 +58,7 @@ class _LoginScreenState extends State<LoginScreen>
     super.dispose();
   }
 
+// Update the _verifyAccountStatus method in login_page.dart
   Future<bool> _verifyAccountStatus(UserCredential userCredential) async {
     if (userCredential.user != null) {
       String userId = userCredential.user!.uid;
@@ -67,32 +68,27 @@ class _LoginScreenState extends State<LoginScreen>
 
       if (userDoc.exists) {
         Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
+        String paymentStatus = userData['subscription']?['paymentStatus'] ?? '';
 
+        // Block login for inactive accounts (paymentStatus 'expired' or 'rejected')
+        if (paymentStatus == 'expired' || paymentStatus == 'rejected') {
+          await _auth.signOut();
+          setState(() {
+            _loginError =
+                "Your account is inactive. Please renew your subscription.";
+          });
+          return false;
+        }
+
+        // Rest of your existing verification logic...
         if (userData['role'] == 'Owner') {
           bool isActive = userData['isAccountActive'] ?? false;
-          String paymentStatus = '';
 
-          if (userData.containsKey('subscription') &&
-              userData['subscription'] is Map<String, dynamic>) {
-            Map<String, dynamic> subscription =
-                userData['subscription'] as Map<String, dynamic>;
-            paymentStatus = subscription['paymentStatus'] ?? '';
-          }
-
-          if (!isActive || paymentStatus == 'rejected') {
+          if (!isActive) {
             await _auth.signOut();
-
             setState(() {
-              if (paymentStatus == 'rejected') {
-                _loginError =
-                    "Your payment was rejected. Please contact admin for assistance.";
-              } else if (paymentStatus == 'pending') {
-                _loginError =
-                    "Your account is awaiting payment verification. Please wait for approval.";
-              } else {
-                _loginError =
-                    "Your account is not active. Please contact support.";
-              }
+              _loginError =
+                  "Your account is not active. Please contact support.";
             });
             return false;
           }
@@ -110,11 +106,10 @@ class _LoginScreenState extends State<LoginScreen>
               if (DateTime.now().isAfter(endDate)) {
                 await _firestore.collection('users').doc(userId).update({
                   'isAccountActive': false,
-                  'subscription.status': 'expired'
+                  'subscription.paymentStatus': 'expired'
                 });
 
                 await _auth.signOut();
-
                 setState(() {
                   _loginError =
                       "Your subscription has expired. Please renew to continue.";
@@ -124,11 +119,9 @@ class _LoginScreenState extends State<LoginScreen>
             }
           }
         }
-
         return true;
       }
     }
-
     return false;
   }
 

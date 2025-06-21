@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_rating_bar/flutter_rating_bar.dart';
+import 'package:intl/intl.dart';
 import 'dart:convert';
 import 'dart:math' as Math;
 import 'AddCommentPage.dart';
@@ -15,211 +16,451 @@ class _ToiletDetailsDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-      title: Row(
-        children: [
-          Icon(Icons.wc, color: Colors.blue),
-          SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              toiletData['name'] ?? "Toilet Details",
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-          ),
-        ],
-      ),
-      content: SingleChildScrollView(
-        child: Column(
-          children: [
-            Container(
-              padding: EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.blue.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.list_alt, color: Colors.blue),
-                  SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      "Amenities: ${toiletData['amenities']?.join(', ') ?? 'Not listed'}",
-                      style: TextStyle(fontSize: 14),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            SizedBox(height: 15),
+    return FutureBuilder<DocumentSnapshot?>(
+      future: _fetchMaintenanceStatus(toiletData['id']),
+      builder: (context, snapshot) {
+        bool hasMaintenance = snapshot.hasData && snapshot.data!.exists;
+        Map<String, dynamic>? maintenanceData = hasMaintenance
+            ? snapshot.data!.data() as Map<String, dynamic>
+            : null;
 
-            // Add photo display section if there are photos
-            if (toiletData['imageUrls'] != null &&
-                (toiletData['imageUrls'] as List).isNotEmpty) ...[
-              Text(
-                "Photos",
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                ),
-              ),
-              SizedBox(height: 8),
-              Container(
-                height: 100,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: toiletData['imageUrls'].length,
-                  itemBuilder: (context, index) {
-                    return Padding(
-                      padding: EdgeInsets.only(right: 8),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: Image.network(
-                          toiletData['imageUrls'][index],
-                          width: 150,
-                          height: 100,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) =>
-                              Container(
-                            width: 150,
-                            height: 100,
-                            color: Colors.grey[200],
-                            child: Center(
-                              child:
-                                  Icon(Icons.broken_image, color: Colors.grey),
-                            ),
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-              SizedBox(height: 15),
-            ],
-
-            Row(
-              children: [
-                Icon(Icons.star, color: Colors.amber),
-                SizedBox(width: 10),
-                Text(
-                  "Rating:",
-                  style: TextStyle(fontWeight: FontWeight.w500),
-                ),
-                SizedBox(width: 5),
-                RatingBarIndicator(
-                  rating: toiletData['average_rating'] ?? 0.0,
-                  itemBuilder: (context, _) =>
-                      Icon(Icons.star, color: Colors.amber),
-                  itemCount: 5,
-                  itemSize: 20.0,
-                ),
-                Text(
-                  " (${toiletData['average_rating']?.toStringAsFixed(1) ?? '0.0'})",
+        return AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+          title: Row(
+            children: [
+              Icon(Icons.wc, color: Colors.blue),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  toiletData['name'] ?? "Toilet Details",
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
-              ],
-            ),
-            Divider(height: 25),
-            FutureBuilder<QuerySnapshot>(
-              future: FirebaseFirestore.instance
-                  .collection('washroom_reviews')
-                  .where('toilet_id', isEqualTo: toiletData['id'])
-                  .orderBy('timestamp', descending: true)
-                  .get(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return Center(child: CircularProgressIndicator());
-                }
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return Text("No reviews yet.");
-                }
-                return Column(
-                  children: snapshot.data!.docs.map((doc) {
-                    var review = doc.data() as Map<String, dynamic>;
-                    return Padding(
-                      padding: EdgeInsets.only(bottom: 12),
+              ),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: MediaQuery.of(context).size.width * 0.8,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Maintenance Status
+                  if (hasMaintenance)
+                    Container(
+                      margin: EdgeInsets.only(bottom: 15),
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              padding: EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 6),
+                              decoration: BoxDecoration(
+                                color:
+                                    (maintenanceData!['status'] == 'Operational'
+                                            ? Colors.green
+                                            : Colors.red)
+                                        .withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(
+                                  color:
+                                      maintenanceData['status'] == 'Operational'
+                                          ? Colors.green
+                                          : Colors.red,
+                                  width: 1,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    maintenanceData['status'] == 'Operational'
+                                        ? Icons.check_circle
+                                        : Icons.error,
+                                    size: 16,
+                                    color: maintenanceData['status'] ==
+                                            'Operational'
+                                        ? Colors.green
+                                        : Colors.red,
+                                  ),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    maintenanceData['status'] ??
+                                        'Unknown Status',
+                                    style: TextStyle(
+                                      color: maintenanceData['status'] ==
+                                              'Operational'
+                                          ? Colors.green
+                                          : Colors.red,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            SizedBox(width: 8),
+                            if (maintenanceData['lastUpdated'] != null)
+                              Container(
+                                padding: EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey[100],
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.calendar_today,
+                                        size: 14, color: Colors.grey[700]),
+                                    SizedBox(width: 4),
+                                    Text(
+                                      'Last: ${DateFormat('MMM d, yyyy').format((maintenanceData['lastUpdated'] as Timestamp).toDate())}',
+                                      style: TextStyle(
+                                          color: Colors.grey[700],
+                                          fontSize: 12),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                  // Operating Hours (if available)
+                  if (toiletData['is24Hours'] != null ||
+                      toiletData['openingTime'] != null)
+                    Container(
+                      width: double.infinity,
+                      padding: EdgeInsets.all(12),
+                      margin: EdgeInsets.only(bottom: 15),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Row(
                             children: [
-                              CircleAvatar(
-                                backgroundColor: Colors.blue.shade100,
-                                child: Icon(Icons.person, color: Colors.blue),
-                              ),
-                              SizedBox(width: 8),
-                              Text(
-                                review['user_name'] ?? 'Anonymous',
-                                style: TextStyle(fontWeight: FontWeight.w500),
-                              ),
-                              Spacer(),
-                              RatingBarIndicator(
-                                rating: review['rating'] ?? 0.0,
-                                itemBuilder: (context, _) =>
-                                    Icon(Icons.star, color: Colors.amber),
-                                itemCount: 5,
-                                itemSize: 16.0,
+                              Icon(Icons.access_time, color: Colors.blue),
+                              SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  toiletData['is24Hours'] == true
+                                      ? "Open 24 Hours"
+                                      : "Open: ${toiletData['openingTime'] ?? '06:00'} - ${toiletData['closingTime'] ?? '22:00'}",
+                                  style: TextStyle(fontSize: 14),
+                                ),
                               ),
                             ],
                           ),
-                          SizedBox(height: 4),
-                          if (review['comment'] != null &&
-                              review['comment'].toString().isNotEmpty)
-                            Text(review['comment'],
-                                style: TextStyle(fontSize: 14)),
-                          if (review['image_url'] != null)
-                            Padding(
-                              padding: EdgeInsets.only(top: 8),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: Image.network(
-                                  review['image_url'],
+                          if (toiletData['operatingDays'] != null) ...[
+                            SizedBox(height: 8),
+                            SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: Wrap(
+                                spacing: 4,
+                                children: List.generate(7, (index) {
+                                  final days = [
+                                    'Mon',
+                                    'Tue',
+                                    'Wed',
+                                    'Thu',
+                                    'Fri',
+                                    'Sat',
+                                    'Sun'
+                                  ];
+                                  bool isOpen = toiletData['operatingDays']
+                                          [index] ??
+                                      true;
+                                  return Chip(
+                                    label: Text(days[index]),
+                                    backgroundColor: isOpen
+                                        ? Colors.green.withOpacity(0.2)
+                                        : Colors.grey.withOpacity(0.2),
+                                    labelStyle: TextStyle(
+                                      color:
+                                          isOpen ? Colors.green : Colors.grey,
+                                    ),
+                                  );
+                                }),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+
+                  // Features (if available)
+                  if (toiletData['features'] != null &&
+                      toiletData['features'].isNotEmpty)
+                    Container(
+                      width: double.infinity,
+                      padding: EdgeInsets.all(12),
+                      margin: EdgeInsets.only(bottom: 15),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.list_alt, color: Colors.blue),
+                              SizedBox(width: 10),
+                              Text(
+                                "Features:",
+                                style: TextStyle(fontSize: 14),
+                              ),
+                            ],
+                          ),
+                          SizedBox(height: 8),
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: (toiletData['features']
+                                      as Map<String, dynamic>)
+                                  .entries
+                                  .where((entry) => entry.value == true)
+                                  .map((entry) => Chip(
+                                        label: Text(entry.key),
+                                        backgroundColor:
+                                            Colors.blue.withOpacity(0.2),
+                                        labelStyle:
+                                            TextStyle(color: Colors.blue),
+                                      ))
+                                  .toList(),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                  // Original content
+                  Container(
+                    padding: EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.list_alt, color: Colors.blue),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            "Amenities: ${toiletData['amenities']?.join(', ') ?? 'Not listed'}",
+                            style: TextStyle(fontSize: 14),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(height: 15),
+
+                  // Photos section
+                  if (toiletData['imageUrls'] != null &&
+                      (toiletData['imageUrls'] as List).isNotEmpty) ...[
+                    Text(
+                      "Photos",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    SizedBox(height: 8),
+                    Container(
+                      height: 100,
+                      child: ListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: toiletData['imageUrls'].length,
+                        itemBuilder: (context, index) {
+                          return Padding(
+                            padding: EdgeInsets.only(right: 8),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.network(
+                                toiletData['imageUrls'][index],
+                                width: 150,
+                                height: 100,
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stackTrace) =>
+                                    Container(
+                                  width: 150,
                                   height: 100,
-                                  width: double.infinity,
-                                  fit: BoxFit.cover,
+                                  color: Colors.grey[200],
+                                  child: Center(
+                                    child: Icon(Icons.broken_image,
+                                        color: Colors.grey),
+                                  ),
                                 ),
                               ),
                             ),
-                        ],
+                          );
+                        },
                       ),
-                    );
-                  }).toList(),
+                    ),
+                    SizedBox(height: 15),
+                  ],
+
+                  // Rating section
+                  Row(
+                    children: [
+                      Icon(Icons.star, color: Colors.amber),
+                      SizedBox(width: 10),
+                      Text(
+                        "Rating:",
+                        style: TextStyle(fontWeight: FontWeight.w500),
+                      ),
+                      SizedBox(width: 5),
+                      RatingBarIndicator(
+                        rating: toiletData['average_rating'] ?? 0.0,
+                        itemBuilder: (context, _) =>
+                            Icon(Icons.star, color: Colors.amber),
+                        itemCount: 5,
+                        itemSize: 20.0,
+                      ),
+                      SizedBox(width: 5),
+                      Text(
+                        "(${toiletData['average_rating']?.toStringAsFixed(1) ?? '0.0'})",
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  Divider(height: 25),
+
+                  // Reviews section
+                  FutureBuilder<QuerySnapshot>(
+                    future: FirebaseFirestore.instance
+                        .collection('washroom_reviews')
+                        .where('toilet_id', isEqualTo: toiletData['id'])
+                        .orderBy('timestamp', descending: true)
+                        .get(),
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return Center(child: CircularProgressIndicator());
+                      }
+                      if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                        return Text("No reviews yet.");
+                      }
+                      return Column(
+                        children: snapshot.data!.docs.map((doc) {
+                          var review = doc.data() as Map<String, dynamic>;
+                          return Padding(
+                            padding: EdgeInsets.only(bottom: 12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    CircleAvatar(
+                                      backgroundColor: Colors.blue.shade100,
+                                      child: Icon(Icons.person,
+                                          color: Colors.blue),
+                                    ),
+                                    SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        review['user_name'] ?? 'Anonymous',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.w500),
+                                      ),
+                                    ),
+                                    RatingBarIndicator(
+                                      rating: review['rating'] ?? 0.0,
+                                      itemBuilder: (context, _) =>
+                                          Icon(Icons.star, color: Colors.amber),
+                                      itemCount: 5,
+                                      itemSize: 16.0,
+                                    ),
+                                  ],
+                                ),
+                                SizedBox(height: 4),
+                                if (review['comment'] != null &&
+                                    review['comment'].toString().isNotEmpty)
+                                  Text(review['comment'],
+                                      style: TextStyle(fontSize: 14)),
+                                if (review['image_url'] != null)
+                                  Padding(
+                                    padding: EdgeInsets.only(top: 8),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: Image.network(
+                                        review['image_url'],
+                                        height: 100,
+                                        width: double.infinity,
+                                        fit: BoxFit.cover,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text("Close", style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => AddCommentPage(
+                      toiletId: toiletData['id'],
+                      toiletName: toiletData['name'],
+                    ),
+                  ),
                 );
               },
+              child: Text("Add Review"),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.white,
+              ),
             ),
           ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: Text("Close", style: TextStyle(color: Colors.grey)),
-        ),
-        ElevatedButton(
-          onPressed: () {
-            Navigator.pop(context);
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => AddCommentPage(
-                  toiletId: toiletData['id'],
-                  toiletName: toiletData['name'],
-                ),
-              ),
-            );
-          },
-          child: Text("Add Review"),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.green,
-            foregroundColor: Colors.white,
-          ),
-        ),
-      ],
+        );
+      },
     );
+  }
+
+  static Future<DocumentSnapshot?> _fetchMaintenanceStatus(
+      String toiletId) async {
+    try {
+      final querySnapshot = await FirebaseFirestore.instance
+          .collection('maintenanceRecords')
+          .where('toiletId', isEqualTo: toiletId)
+          .limit(1)
+          .get();
+      return querySnapshot.docs.isNotEmpty ? querySnapshot.docs.first : null;
+    } catch (e) {
+      debugPrint('Error fetching maintenance status: $e');
+      return null;
+    }
   }
 }
 
+// Rest of the file remains the same...
+// [Keep all the existing code from _ViewReviewsPageState class onwards]
 class ViewReviewsPage extends StatefulWidget {
   final String toiletId;
 

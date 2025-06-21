@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:intl/intl.dart';
 import 'package:project_x/screen/view_reviews_page.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_rating_bar/flutter_rating_bar.dart';
@@ -514,6 +515,50 @@ class _HomePageState extends State<HomePage> {
     final double avgRating = data['average_rating'] ?? 0.0;
     final String toiletId = data['id'];
 
+    // Try to fetch maintenance status
+    DocumentSnapshot? maintenanceSnapshot;
+    try {
+      final querySnapshot = await FirebaseFirestore.instance
+          .collection('maintenanceRecords')
+          .where('toiletId', isEqualTo: toiletId)
+          .limit(1)
+          .get();
+      maintenanceSnapshot =
+          querySnapshot.docs.isNotEmpty ? querySnapshot.docs.first : null;
+    } catch (e) {
+      debugPrint('Error fetching maintenance status: $e');
+    }
+
+    // Fetch complete toilet details from Firestore if maintenance exists
+    DocumentSnapshot? toiletDoc;
+    bool hasOperatingInfo = false;
+    bool is24Hours = false;
+    String openingTime = '06:00';
+    String closingTime = '22:00';
+    List<bool> operatingDays = List.filled(7, true);
+    Map<String, bool> features = {};
+
+    if (maintenanceSnapshot != null && maintenanceSnapshot.exists) {
+      try {
+        toiletDoc = await FirebaseFirestore.instance
+            .collection('toilets')
+            .doc(toiletId)
+            .get();
+
+        if (toiletDoc.exists) {
+          hasOperatingInfo = true;
+          is24Hours = toiletDoc['is24Hours'] ?? false;
+          openingTime = toiletDoc['openingTime'] ?? '06:00';
+          closingTime = toiletDoc['closingTime'] ?? '22:00';
+          operatingDays = List<bool>.from(
+              toiletDoc['operatingDays'] ?? List.filled(7, true));
+          features = Map<String, bool>.from(toiletDoc['features'] ?? {});
+        }
+      } catch (e) {
+        debugPrint('Error fetching toilet details: $e');
+      }
+    }
+
     final QuerySnapshot reviewsSnapshot = await FirebaseFirestore.instance
         .collection('washroom_reviews')
         .where('toilet_id', isEqualTo: toiletId)
@@ -535,245 +580,734 @@ class _HomePageState extends State<HomePage> {
     showDialog(
       context: context,
       builder: (BuildContext context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(15),
-          ),
-          title: Row(
-            children: [
-              const Icon(Icons.wc, color: Colors.blue),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  data['name'] ?? "Toilet Details",
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
+        if (maintenanceSnapshot != null && maintenanceSnapshot.exists) {
+          // Show dialog with maintenance details (your enhanced version)
+          return Dialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(15),
+            ),
+            insetPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: MediaQuery.of(context).size.width - 40,
+                maxHeight: MediaQuery.of(context).size.height * 0.8,
               ),
-            ],
-          ),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.list_alt, color: Colors.blue),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          "Amenities: ${data['amenities']?.join(', ') ?? 'Not listed'}",
-                          style: const TextStyle(fontSize: 14),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 15),
-                if (data['imageUrls'] != null &&
-                    (data['imageUrls'] as List).isNotEmpty) ...[
-                  const Text(
-                    "Photos",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    height: 100,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: data['imageUrls'].length,
-                      itemBuilder: (context, index) {
-                        return Padding(
-                          padding: const EdgeInsets.only(right: 8),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: Image.network(
-                              data['imageUrls'][index],
-                              width: 150,
-                              height: 100,
-                              fit: BoxFit.cover,
-                              errorBuilder: (context, error, stackTrace) =>
-                                  Container(
-                                width: 150,
-                                height: 100,
-                                color: Colors.grey[200],
-                                child: Center(
-                                  child: Icon(Icons.broken_image,
-                                      color: Colors.grey),
-                                ),
-                              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Header with title
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.wc, color: Colors.blue),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            data['name'] ?? "Toilet Details",
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
                             ),
                           ),
-                        );
-                      },
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 15),
-                ],
-                Row(
-                  children: [
-                    const Icon(Icons.star, color: Colors.amber),
-                    const SizedBox(width: 10),
-                    const Text(
-                      "Rating:",
-                      style: TextStyle(fontWeight: FontWeight.w500),
-                    ),
-                    const SizedBox(width: 5),
-                    RatingBarIndicator(
-                      rating: avgRating,
-                      itemBuilder: (context, _) => const Icon(
-                        Icons.star,
-                        color: Colors.amber,
-                      ),
-                      itemCount: 5,
-                      itemSize: 20.0,
-                    ),
-                    Text(
-                      " ($avgRating)",
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
-                if (reviews.isNotEmpty) ...[
-                  const Divider(height: 25),
-                  const Text(
-                    "Recent Reviews",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  ...reviews
-                      .map((review) => Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+
+                  // Divider
+                  const Divider(height: 1, thickness: 1),
+
+                  // Content
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Maintenance Status
+                          Container(
+                            margin: const EdgeInsets.only(bottom: 15),
+                            child: Row(
                               children: [
-                                Row(
-                                  children: [
-                                    CircleAvatar(
-                                      backgroundColor: Colors.blue.shade100,
-                                      child: const Icon(Icons.person,
-                                          color: Colors.blue),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: (maintenanceSnapshot['status'] ==
+                                                'Operational'
+                                            ? Colors.green
+                                            : Colors.red)
+                                        .withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(
+                                      color: maintenanceSnapshot['status'] ==
+                                              'Operational'
+                                          ? Colors.green
+                                          : Colors.red,
+                                      width: 1,
                                     ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      review['user_name'] ?? 'Anonymous',
-                                      style: const TextStyle(
-                                          fontWeight: FontWeight.w500),
-                                    ),
-                                    const Spacer(),
-                                    RatingBarIndicator(
-                                      rating: review['rating'] ?? 0.0,
-                                      itemBuilder: (context, _) => const Icon(
-                                        Icons.star,
-                                        color: Colors.amber,
-                                      ),
-                                      itemCount: 5,
-                                      itemSize: 16.0,
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 4),
-                                if (review['comment'] != null &&
-                                    review['comment'].isNotEmpty)
-                                  Text(
-                                    review['comment'],
-                                    style: const TextStyle(fontSize: 14),
                                   ),
-                                if (review['image_url'] != null)
-                                  Padding(
-                                    padding: const EdgeInsets.only(top: 8),
-                                    child: ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
-                                      child: Image.network(
-                                        review['image_url'],
-                                        height: 100,
-                                        width: double.infinity,
-                                        fit: BoxFit.cover,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        maintenanceSnapshot['status'] ==
+                                                'Operational'
+                                            ? Icons.check_circle
+                                            : Icons.error,
+                                        size: 16,
+                                        color: maintenanceSnapshot['status'] ==
+                                                'Operational'
+                                            ? Colors.green
+                                            : Colors.red,
                                       ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        maintenanceSnapshot['status'] ??
+                                            'Unknown Status',
+                                        style: TextStyle(
+                                          color:
+                                              maintenanceSnapshot['status'] ==
+                                                      'Operational'
+                                                  ? Colors.green
+                                                  : Colors.red,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                if (maintenanceSnapshot['lastUpdated'] != null)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 12, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey[100],
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.calendar_today,
+                                            size: 14, color: Colors.grey[700]),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          'Last: ${DateFormat('MMM d, yyyy').format((maintenanceSnapshot['lastUpdated'] as Timestamp).toDate())}',
+                                          style: TextStyle(
+                                              color: Colors.grey[700],
+                                              fontSize: 12),
+                                        ),
+                                      ],
                                     ),
                                   ),
                               ],
                             ),
-                          ))
-                      .toList(),
-                  TextButton(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => ViewReviewsPage(
-                            toiletId: data['id'],
                           ),
-                        ),
-                      );
-                    },
-                    child: const Text("View all reviews"),
-                  ),
-                ],
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text(
-                "Close",
-                style: TextStyle(color: Colors.grey),
-              ),
-            ),
-            ElevatedButton.icon(
-              icon: const Icon(Icons.directions),
-              label: const Text("Navigate"),
-              style: ElevatedButton.styleFrom(
-                foregroundColor: Colors.white,
-                backgroundColor: Colors.blue,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                ),
-              ),
-              onPressed: () {
-                Navigator.pop(context);
-                _getDirections(LatLng(toiletLat, toiletLng));
-              },
-            ),
-            ElevatedButton.icon(
-              icon: const Icon(Icons.rate_review),
-              label: const Text("Review"),
-              style: ElevatedButton.styleFrom(
-                foregroundColor: Colors.white,
-                backgroundColor: Colors.green,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                ),
-              ),
-              onPressed: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => AddCommentPage(
-                      toiletId: toiletId,
-                      toiletName: data['name'],
+
+                          // Operating Hours (only if hasOperatingInfo)
+                          if (hasOperatingInfo)
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(12),
+                              margin: const EdgeInsets.only(bottom: 15),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.access_time,
+                                          color: Colors.blue),
+                                      const SizedBox(width: 10),
+                                      Text(
+                                        is24Hours
+                                            ? "Open 24 Hours"
+                                            : "Open: $openingTime - $closingTime",
+                                        style: const TextStyle(fontSize: 14),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Wrap(
+                                    spacing: 4,
+                                    children: List.generate(7, (index) {
+                                      final days = [
+                                        'Mon',
+                                        'Tue',
+                                        'Wed',
+                                        'Thu',
+                                        'Fri',
+                                        'Sat',
+                                        'Sun'
+                                      ];
+                                      return Chip(
+                                        label: Text(days[index]),
+                                        backgroundColor: operatingDays[index]
+                                            ? Colors.green.withOpacity(0.2)
+                                            : Colors.grey.withOpacity(0.2),
+                                        labelStyle: TextStyle(
+                                          color: operatingDays[index]
+                                              ? Colors.green
+                                              : Colors.grey,
+                                        ),
+                                      );
+                                    }),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                          // Features (only if hasOperatingInfo)
+                          if (hasOperatingInfo && features.isNotEmpty)
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(12),
+                              margin: const EdgeInsets.only(bottom: 15),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Row(
+                                    children: [
+                                      Icon(Icons.list_alt, color: Colors.blue),
+                                      SizedBox(width: 10),
+                                      Text(
+                                        "Features:",
+                                        style: TextStyle(fontSize: 14),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Wrap(
+                                    spacing: 8,
+                                    runSpacing: 8,
+                                    children: features.entries
+                                        .where((entry) => entry.value == true)
+                                        .map((entry) => Chip(
+                                              label: Text(entry.key),
+                                              backgroundColor:
+                                                  Colors.blue.withOpacity(0.2),
+                                              labelStyle: const TextStyle(
+                                                  color: Colors.blue),
+                                            ))
+                                        .toList(),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                          // Rest of your content (amenities, photos, ratings, reviews)
+                          // ... [Include all the other content sections from your original code here]
+                          // Amenities
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            margin: const EdgeInsets.only(bottom: 15),
+                            decoration: BoxDecoration(
+                              color: Colors.blue.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.list_alt, color: Colors.blue),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    "Amenities: ${data['amenities']?.join(', ') ?? 'Not listed'}",
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          // Photos
+                          if (data['imageUrls'] != null &&
+                              (data['imageUrls'] as List).isNotEmpty) ...[
+                            const Text(
+                              "Photos",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            SizedBox(
+                              height: 100,
+                              child: ListView.builder(
+                                scrollDirection: Axis.horizontal,
+                                itemCount: data['imageUrls'].length,
+                                itemBuilder: (context, index) {
+                                  return Padding(
+                                    padding: const EdgeInsets.only(right: 8),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: Image.network(
+                                        data['imageUrls'][index],
+                                        width: 150,
+                                        height: 100,
+                                        fit: BoxFit.cover,
+                                        errorBuilder:
+                                            (context, error, stackTrace) =>
+                                                Container(
+                                          width: 150,
+                                          height: 100,
+                                          color: Colors.grey[200],
+                                          child: Center(
+                                            child: Icon(Icons.broken_image,
+                                                color: Colors.grey),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                            const SizedBox(height: 15),
+                          ],
+
+                          // Rating
+                          Row(
+                            children: [
+                              const Icon(Icons.star, color: Colors.amber),
+                              const SizedBox(width: 10),
+                              const Text(
+                                "Rating:",
+                                style: TextStyle(fontWeight: FontWeight.w500),
+                              ),
+                              const SizedBox(width: 5),
+                              RatingBarIndicator(
+                                rating: avgRating,
+                                itemBuilder: (context, _) => const Icon(
+                                  Icons.star,
+                                  color: Colors.amber,
+                                ),
+                                itemCount: 5,
+                                itemSize: 20.0,
+                              ),
+                              Text(
+                                " (${avgRating.toStringAsFixed(1)})",
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+
+                          // Reviews
+                          if (reviews.isNotEmpty) ...[
+                            const Divider(height: 25),
+                            const Text(
+                              "Recent Reviews",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            ...reviews
+                                .map((review) => Padding(
+                                      padding:
+                                          const EdgeInsets.only(bottom: 12),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              CircleAvatar(
+                                                backgroundColor:
+                                                    Colors.blue.shade100,
+                                                child: const Icon(Icons.person,
+                                                    color: Colors.blue),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                review['user_name'] ??
+                                                    'Anonymous',
+                                                style: const TextStyle(
+                                                    fontWeight:
+                                                        FontWeight.w500),
+                                              ),
+                                              const Spacer(),
+                                              RatingBarIndicator(
+                                                rating: review['rating'] ?? 0.0,
+                                                itemBuilder: (context, _) =>
+                                                    const Icon(
+                                                  Icons.star,
+                                                  color: Colors.amber,
+                                                ),
+                                                itemCount: 5,
+                                                itemSize: 16.0,
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 4),
+                                          if (review['comment'] != null &&
+                                              review['comment'].isNotEmpty)
+                                            Text(
+                                              review['comment'],
+                                              style:
+                                                  const TextStyle(fontSize: 14),
+                                            ),
+                                          if (review['image_url'] != null)
+                                            Padding(
+                                              padding:
+                                                  const EdgeInsets.only(top: 8),
+                                              child: ClipRRect(
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                                child: Image.network(
+                                                  review['image_url'],
+                                                  height: 100,
+                                                  width: double.infinity,
+                                                  fit: BoxFit.cover,
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ))
+                                .toList(),
+                            TextButton(
+                              onPressed: () {
+                                Navigator.pop(context);
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => ViewReviewsPage(
+                                      toiletId: data['id'],
+                                    ),
+                                  ),
+                                );
+                              },
+                              child: const Text("View all reviews"),
+                            ),
+                          ],
+                        ],
+                      ),
                     ),
                   ),
-                );
-              },
+
+                  // Action buttons
+                  Padding(
+                    padding: const EdgeInsets.all(15),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: const Text(
+                            "Close",
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        ),
+                        Row(
+                          children: [
+                            ElevatedButton.icon(
+                              icon: const Icon(Icons.directions, size: 18),
+                              label: const Text("Navigate"),
+                              style: ElevatedButton.styleFrom(
+                                foregroundColor: Colors.white,
+                                backgroundColor: Colors.blue,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 10),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                              ),
+                              onPressed: () {
+                                Navigator.pop(context);
+                                _getDirections(LatLng(toiletLat, toiletLng));
+                              },
+                            ),
+                            const SizedBox(width: 8),
+                            ElevatedButton.icon(
+                              icon: const Icon(Icons.rate_review, size: 18),
+                              label: const Text("Review"),
+                              style: ElevatedButton.styleFrom(
+                                foregroundColor: Colors.white,
+                                backgroundColor: Colors.green,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 10),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                              ),
+                              onPressed: () {
+                                Navigator.pop(context);
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => AddCommentPage(
+                                      toiletId: toiletId,
+                                      toiletName: data['name'],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ],
-        );
+          );
+        } else {
+          // Show your original dialog without maintenance details
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(15),
+            ),
+            title: Row(
+              children: [
+                const Icon(Icons.wc, color: Colors.blue),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    data['name'] ?? "Toilet Details",
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.list_alt, color: Colors.blue),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            "Amenities: ${data['amenities']?.join(', ') ?? 'Not listed'}",
+                            style: const TextStyle(fontSize: 14),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 15),
+                  if (data['imageUrls'] != null &&
+                      (data['imageUrls'] as List).isNotEmpty) ...[
+                    const Text(
+                      "Photos",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      height: 100,
+                      child: ListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: data['imageUrls'].length,
+                        itemBuilder: (context, index) {
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.network(
+                                data['imageUrls'][index],
+                                width: 150,
+                                height: 100,
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stackTrace) =>
+                                    Container(
+                                  width: 150,
+                                  height: 100,
+                                  color: Colors.grey[200],
+                                  child: Center(
+                                    child: Icon(Icons.broken_image,
+                                        color: Colors.grey),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 15),
+                  ],
+                  Row(
+                    children: [
+                      const Icon(Icons.star, color: Colors.amber),
+                      const SizedBox(width: 10),
+                      const Text(
+                        "Rating:",
+                        style: TextStyle(fontWeight: FontWeight.w500),
+                      ),
+                      const SizedBox(width: 5),
+                      RatingBarIndicator(
+                        rating: avgRating,
+                        itemBuilder: (context, _) => const Icon(
+                          Icons.star,
+                          color: Colors.amber,
+                        ),
+                        itemCount: 5,
+                        itemSize: 20.0,
+                      ),
+                      Text(
+                        " ($avgRating)",
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  if (reviews.isNotEmpty) ...[
+                    const Divider(height: 25),
+                    const Text(
+                      "Recent Reviews",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    ...reviews
+                        .map((review) => Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      CircleAvatar(
+                                        backgroundColor: Colors.blue.shade100,
+                                        child: const Icon(Icons.person,
+                                            color: Colors.blue),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        review['user_name'] ?? 'Anonymous',
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.w500),
+                                      ),
+                                      const Spacer(),
+                                      RatingBarIndicator(
+                                        rating: review['rating'] ?? 0.0,
+                                        itemBuilder: (context, _) => const Icon(
+                                          Icons.star,
+                                          color: Colors.amber,
+                                        ),
+                                        itemCount: 5,
+                                        itemSize: 16.0,
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  if (review['comment'] != null &&
+                                      review['comment'].isNotEmpty)
+                                    Text(
+                                      review['comment'],
+                                      style: const TextStyle(fontSize: 14),
+                                    ),
+                                  if (review['image_url'] != null)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 8),
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: Image.network(
+                                          review['image_url'],
+                                          height: 100,
+                                          width: double.infinity,
+                                          fit: BoxFit.cover,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ))
+                        .toList(),
+                    TextButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => ViewReviewsPage(
+                              toiletId: data['id'],
+                            ),
+                          ),
+                        );
+                      },
+                      child: const Text("View all reviews"),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text(
+                  "Close",
+                  style: TextStyle(color: Colors.grey),
+                ),
+              ),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.directions),
+                label: const Text("Navigate"),
+                style: ElevatedButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  backgroundColor: Colors.blue,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                ),
+                onPressed: () {
+                  Navigator.pop(context);
+                  _getDirections(LatLng(toiletLat, toiletLng));
+                },
+              ),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.rate_review),
+                label: const Text("Review"),
+                style: ElevatedButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  backgroundColor: Colors.green,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                ),
+                onPressed: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => AddCommentPage(
+                        toiletId: toiletId,
+                        toiletName: data['name'],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          );
+        }
       },
     );
   }
