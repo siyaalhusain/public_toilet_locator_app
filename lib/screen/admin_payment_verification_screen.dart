@@ -9,8 +9,6 @@ import 'package:photo_view/photo_view.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/services.dart';
 
-//jful vvsn cmui ocwr
-//firebase functions:config:set gmail.email="siyaalhusain26@gmail.com" gmail.password="jful vvsn cmui ocwr"
 class AdminPaymentVerificationScreen extends StatefulWidget {
   @override
   _AdminPaymentVerificationScreenState createState() =>
@@ -18,114 +16,256 @@ class AdminPaymentVerificationScreen extends StatefulWidget {
 }
 
 class _AdminPaymentVerificationScreenState
-    extends State<AdminPaymentVerificationScreen> {
+    extends State<AdminPaymentVerificationScreen>
+    with SingleTickerProviderStateMixin {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseFunctions _functions = FirebaseFunctions.instance;
-  List<Map<String, dynamic>> _pendingPayments = [];
-  List<Map<String, dynamic>> _filteredPayments = [];
-  bool _isLoading = true;
-  String _selectedFilter = 'All';
-  final List<String> _filterOptions = [
-    'All',
-    'Pending',
-    'Approved',
-    'Rejected'
-  ];
 
+  late TabController _tabController;
+
+  // Data for each tab
+  List<Map<String, dynamic>> _pendingPayments = [];
+  List<Map<String, dynamic>> _activePayments = [];
+  List<Map<String, dynamic>> _inactivePayments = [];
+  List<Map<String, dynamic>> _renewPayments = [];
+
+  // Filtered data for search
+  List<Map<String, dynamic>> _filteredPending = [];
+  List<Map<String, dynamic>> _filteredActive = [];
+  List<Map<String, dynamic>> _filteredInactive = [];
+  List<Map<String, dynamic>> _filteredRenew = [];
+
+  bool _isLoading = true;
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
+  Timer? _subscriptionTimer;
 
   @override
   void initState() {
     super.initState();
-    _loadPendingPayments();
+    _tabController = TabController(length: 4, vsync: this);
+    _loadAllPayments();
     _ensureNotificationsCollectionExists();
+
+    // Check every 5 minutes for expired subscriptions
+    _subscriptionTimer = Timer.periodic(Duration(minutes: 5), (timer) {
+      _checkAndMoveExpiredSubscriptions();
+    });
+
+    // Also check immediately when screen loads
+    _checkAndMoveExpiredSubscriptions();
 
     _searchController.addListener(() {
       setState(() {
         _searchQuery = _searchController.text;
-        _filterPayments();
+        _filterAllPayments();
+      });
+    });
+
+    _tabController.addListener(() {
+      setState(() {
+        _filterAllPayments();
       });
     });
   }
 
   @override
   void dispose() {
+    _tabController.dispose();
     _searchController.dispose();
+    _subscriptionTimer?.cancel();
     super.dispose();
   }
 
-  void _filterPayments() {
-    if (_selectedFilter == 'All' && _searchQuery.isEmpty) {
-      _filteredPayments = List.from(_pendingPayments);
-    } else {
-      _filteredPayments = _pendingPayments.where((payment) {
-        bool matchesStatus = _selectedFilter == 'All' ||
-            payment['paymentStatus'].toLowerCase() ==
-                _selectedFilter.toLowerCase();
-
-        if (!matchesStatus) return false;
-
-        if (_searchQuery.isEmpty) return true;
-
-        final String searchLower = _searchQuery.toLowerCase();
-        final String name = payment['name']?.toString().toLowerCase() ?? '';
-        final String email = payment['email']?.toString().toLowerCase() ?? '';
-        final String planName =
-            payment['planName']?.toString().toLowerCase() ?? '';
-
-        return name.contains(searchLower) ||
-            email.contains(searchLower) ||
-            planName.contains(searchLower);
-      }).toList();
-    }
+  // Start timer to check subscription expiry every hour
+  void _startSubscriptionTimer() {
+    _subscriptionTimer = Timer.periodic(Duration(minutes: 5), (timer) {
+      if (mounted) {
+        _checkAndMoveExpiredSubscriptions();
+      }
+    });
   }
 
-  // Add this with other state variables
-  final Map<String, bool> _emailDeliveryStatus = {};
-
-// Add these new methods
-  Future<bool> _verifyEmailDelivery(
-      String userId, String notificationId) async {
+  Future<void> _checkAndMoveExpiredSubscriptions() async {
     try {
-      // Check delivery status every 2 seconds for up to 10 seconds
-      for (int i = 0; i < 5; i++) {
-        await Future.delayed(Duration(seconds: 2));
+      final now = DateTime.now();
+      final activeQuery = await _firestore
+          .collection('users')
+          .where('role', isEqualTo: 'Owner')
+          .where('subscription.paymentStatus', isEqualTo: 'approved')
+          .where('isAccountActive', isEqualTo: true)
+          .get();
 
-        final doc = await _firestore
-            .collection('notifications')
-            .doc(notificationId)
-            .get();
-        if (doc.exists && doc.data()?['emailDelivered'] == true) {
-          return true;
+      WriteBatch batch = _firestore.batch();
+      List<String> expiredUserIds = [];
+
+      for (var doc in activeQuery.docs) {
+        final data = doc.data();
+        final subscription = data['subscription'] as Map<String, dynamic>?;
+
+        if (subscription != null && subscription['endDate'] != null) {
+          final endDate = (subscription['endDate'] as Timestamp).toDate();
+
+          if (now.isAfter(endDate)) {
+            // Move to inactive
+            batch.update(doc.reference, {
+              'subscription.paymentStatus': 'expired',
+              'isAccountActive': false,
+              'subscription.expiredAt': FieldValue.serverTimestamp(),
+              'subscription.rejectionReason': 'Subscription period ended',
+            });
+
+            expiredUserIds.add(doc.id);
+
+            // Add notification
+            final notificationRef =
+                _firestore.collection('notifications').doc();
+            batch.set(notificationRef, {
+              'userId': doc.id,
+              'type': 'subscription_expired',
+              'message':
+                  'Your subscription has expired. Please renew to continue using our services.',
+              'createdAt': FieldValue.serverTimestamp(),
+              'read': false
+            });
+          }
         }
       }
-      return false;
+
+      if (expiredUserIds.isNotEmpty) {
+        await batch.commit();
+        await _disableRelatedData(expiredUserIds);
+        await _loadAllPayments(); // Refresh data
+
+        // Show a snackbar to inform admin
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                  '${expiredUserIds.length} subscription(s) moved to inactive'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      }
     } catch (e) {
-      print('Error verifying email delivery: $e');
-      return false;
+      print('Error checking expired subscriptions: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error checking expired subscriptions'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
-  void _showEmailDeliveryStatus(String userId, bool success) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(success
-            ? 'Email notification sent successfully'
-            : 'Email notification failed to send (queued for retry)'),
-        backgroundColor: success ? Colors.green : Colors.orange,
-        duration: Duration(seconds: 3),
-      ),
-    );
-    setState(() {
-      _emailDeliveryStatus[userId] = success;
-    });
+  Future<void> _disableRelatedData(List<String> userIds) async {
+    try {
+      WriteBatch batch = _firestore.batch();
+
+      for (String userId in userIds) {
+        // Disable toilets owned by this user
+        final toiletsQuery = await _firestore
+            .collection('toilets')
+            .where('ownerId', isEqualTo: userId)
+            .get();
+
+        for (var toiletDoc in toiletsQuery.docs) {
+          batch.update(toiletDoc.reference, {
+            'isActive': false,
+            'disabledAt': FieldValue.serverTimestamp(),
+            'disabledReason': 'Owner subscription expired'
+          });
+        }
+
+        // Disable maintainers assigned to this owner's toilets
+        final maintainersQuery = await _firestore
+            .collection('users')
+            .where('role', isEqualTo: 'Maintainer')
+            .where('assignedOwnerId', isEqualTo: userId)
+            .get();
+
+        for (var maintainerDoc in maintainersQuery.docs) {
+          batch.update(maintainerDoc.reference, {
+            'isAccountActive': false,
+            'disabledAt': FieldValue.serverTimestamp(),
+            'disabledReason': 'Owner subscription expired'
+          });
+        }
+      }
+
+      await batch.commit();
+    } catch (e) {
+      print('Error disabling related data: $e');
+    }
+  }
+
+  Future<void> _enableRelatedData(String userId) async {
+    try {
+      WriteBatch batch = _firestore.batch();
+
+      // Enable toilets owned by this user
+      final toiletsQuery = await _firestore
+          .collection('toilets')
+          .where('ownerId', isEqualTo: userId)
+          .get();
+
+      for (var toiletDoc in toiletsQuery.docs) {
+        batch.update(toiletDoc.reference, {
+          'isActive': true,
+          'enabledAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      // Enable maintainers assigned to this owner's toilets
+      final maintainersQuery = await _firestore
+          .collection('users')
+          .where('role', isEqualTo: 'Maintainer')
+          .where('assignedOwnerId', isEqualTo: userId)
+          .get();
+
+      for (var maintainerDoc in maintainersQuery.docs) {
+        batch.update(maintainerDoc.reference, {
+          'isAccountActive': true,
+          'enabledAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+    } catch (e) {
+      print('Error enabling related data: $e');
+    }
+  }
+
+  void _filterAllPayments() {
+    _filteredPending = _filterPayments(_pendingPayments);
+    _filteredActive = _filterPayments(_activePayments);
+    _filteredInactive = _filterPayments(_inactivePayments);
+    _filteredRenew = _filterPayments(_renewPayments);
+  }
+
+  List<Map<String, dynamic>> _filterPayments(
+      List<Map<String, dynamic>> payments) {
+    if (_searchQuery.isEmpty) return List.from(payments);
+
+    return payments.where((payment) {
+      final String searchLower = _searchQuery.toLowerCase();
+      final String name = payment['name']?.toString().toLowerCase() ?? '';
+      final String email = payment['email']?.toString().toLowerCase() ?? '';
+      final String planName =
+          payment['planName']?.toString().toLowerCase() ?? '';
+
+      return name.contains(searchLower) ||
+          email.contains(searchLower) ||
+          planName.contains(searchLower);
+    }).toList();
   }
 
   Future<void> _ensureNotificationsCollectionExists() async {
     try {
       await _firestore.collection('notifications').limit(1).get();
-      return;
     } catch (e) {
       await _firestore.collection('notifications').doc('dummy').set({
         'type': 'system',
@@ -137,54 +277,136 @@ class _AdminPaymentVerificationScreenState
     }
   }
 
-  void _logAction(String action, String userId,
-      [Map<String, dynamic>? extraData]) {
-    final Map<String, dynamic> logData = {
-      'action': action,
-      'timestamp': FieldValue.serverTimestamp(),
-      'adminId': FirebaseAuth.instance.currentUser?.uid,
-      'userId': userId,
-      ...?extraData,
-    };
-
-    _firestore.collection('activityLogs').add(logData).catchError((error) {
-      print('Error writing log: $error');
+// Update the _loadAllPayments method in admin_payment_verification_screen.dart
+  Future<void> _loadAllPayments() async {
+    setState(() {
+      _isLoading = true;
     });
+
+    try {
+      // Get all owner users
+      QuerySnapshot snapshot = await _firestore
+          .collection('users')
+          .where('role', isEqualTo: 'Owner')
+          .get();
+
+      List<Map<String, dynamic>> pending = [];
+      List<Map<String, dynamic>> active = [];
+      List<Map<String, dynamic>> inactive = [];
+      List<Map<String, dynamic>> renew = [];
+
+      for (var doc in snapshot.docs) {
+        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+
+        if (data.containsKey('subscription')) {
+          Map<String, dynamic> subscription = data['subscription'];
+          String paymentStatus = subscription['paymentStatus'] ?? 'pending';
+          bool isRenewal = subscription['isRenewal'] ?? false;
+
+          // Check if subscription has actually expired
+          if (paymentStatus == 'approved' && subscription['endDate'] != null) {
+            DateTime endDate = (subscription['endDate'] as Timestamp).toDate();
+            if (DateTime.now().isAfter(endDate)) {
+              paymentStatus = 'expired';
+            }
+          }
+
+          String formattedDate = 'Unknown date';
+          if (data['createdAt'] != null) {
+            formattedDate = DateFormat('MMM d, yyyy - h:mm a')
+                .format((data['createdAt'] as Timestamp).toDate());
+          }
+
+          Map<String, dynamic> paymentData = {
+            'userId': doc.id,
+            'name': data['name'] ?? 'Unknown',
+            'email': data['email'] ?? 'No email',
+            'planName': subscription['planName'] ?? 'Unknown Plan',
+            'planPrice': subscription['price'] ?? 0.0,
+            'paymentStatus': paymentStatus,
+            'paymentMethod': subscription['paymentMethod'] ?? 'Unknown',
+            'paymentProofUrl': subscription['paymentProofUrl'] ?? '',
+            'duration': subscription['duration'] ?? '1 month',
+            'createdAt': data['createdAt'],
+            'formattedDate': formattedDate,
+            'isAccountActive': data['isAccountActive'] ?? false,
+            'startDate': subscription['startDate'],
+            'endDate': subscription['endDate'],
+            'rejectionReason': subscription['rejectionReason'],
+            'isRenewal': isRenewal,
+          };
+
+          // Categorize payments
+          if (paymentStatus == 'renew_pending') {
+            renew.add(paymentData);
+          } else if (paymentStatus == 'pending' && !isRenewal) {
+            pending.add(paymentData);
+          } else if (paymentStatus == 'approved' &&
+              (data['isAccountActive'] ?? false)) {
+            active.add(paymentData);
+          } else {
+            inactive.add(paymentData);
+          }
+        }
+      }
+
+      // Sort all lists by creation date (newest first)
+      pending.sort((a, b) =>
+          (b['createdAt'] as Timestamp).compareTo(a['createdAt'] as Timestamp));
+      active.sort((a, b) =>
+          (b['createdAt'] as Timestamp).compareTo(a['createdAt'] as Timestamp));
+      inactive.sort((a, b) =>
+          (b['createdAt'] as Timestamp).compareTo(a['createdAt'] as Timestamp));
+      renew.sort((a, b) =>
+          (b['createdAt'] as Timestamp).compareTo(a['createdAt'] as Timestamp));
+
+      setState(() {
+        _pendingPayments = pending;
+        _activePayments = active;
+        _inactivePayments = inactive;
+        _renewPayments = renew;
+        _filterAllPayments();
+        _isLoading = false;
+      });
+    } catch (e) {
+      print('Error loading payments: $e');
+      setState(() {
+        _isLoading = false;
+      });
+      _handleError('loading payments', e);
+    }
+  }
+
+  Future<bool> _checkIfRenewal(String email) async {
+    try {
+      final inactiveQuery = await _firestore
+          .collection('users')
+          .where('email', isEqualTo: email)
+          .where('role', isEqualTo: 'Owner')
+          .where('isAccountActive', isEqualTo: false)
+          .limit(1)
+          .get();
+
+      return inactiveQuery.docs.isNotEmpty;
+    } catch (e) {
+      return false;
+    }
   }
 
   Future<void> _sendEmailNotification(
       String userEmail, String subject, String message) async {
     try {
-      EasyLoading.show(status: 'Sending email...');
-
       final HttpsCallable callable =
           _functions.httpsCallable('sendEmailNotification');
-      final result = await callable.call({
+      await callable.call({
         'email': userEmail,
         'subject': subject,
         'message': message,
         'type': 'payment_verification'
       });
-
-      // Verify delivery status
-      final notificationId = result.data['notificationId'];
-      if (notificationId != null) {
-        final deliveryVerified =
-            await _verifyEmailDelivery('admin', notificationId);
-        _showEmailDeliveryStatus('admin', deliveryVerified);
-      }
-
-      EasyLoading.dismiss();
-    } on PlatformException catch (e) {
-      EasyLoading.dismiss();
-      print('Platform error sending email: ${e.message}');
-      await _queueEmailNotification(userEmail, subject, message);
-      _showEmailDeliveryStatus('admin', false);
     } catch (e) {
-      EasyLoading.dismiss();
-      print('Error sending email notification: $e');
+      print('Error sending email: $e');
       await _queueEmailNotification(userEmail, subject, message);
-      _showEmailDeliveryStatus('admin', false);
     }
   }
 
@@ -202,7 +424,391 @@ class _AdminPaymentVerificationScreenState
       });
     } catch (e) {
       print('Failed to queue email: $e');
-      _handleError('queueing email notification', e);
+    }
+  }
+
+  Future<void> _sendSubscriptionExpiredEmail(
+      String email, String name, String planName) async {
+    String subject = 'Subscription Expired - Renewal Required';
+    String message = '''
+Dear $name,
+
+Your subscription for the $planName plan has expired.
+
+To continue using our services, please renew your subscription by logging into your account and selecting a new plan.
+
+If you have any questions, please contact our support team.
+
+Best regards,
+The Support Team
+''';
+
+    await _sendEmailNotification(email, subject, message);
+  }
+
+  Future<void> _approvePayment(String userId, double price, String planName,
+      String duration, String userEmail, String userName) async {
+    try {
+      EasyLoading.show(status: 'Approving payment...');
+
+      DateTime now = DateTime.now();
+      DateTime endDate = now;
+
+      if (duration.contains('month')) {
+        int months = int.tryParse(duration.split(' ')[0]) ?? 1;
+        endDate = DateTime(now.year, now.month + months, now.day);
+      } else if (duration.contains('year')) {
+        int years = int.tryParse(duration.split(' ')[0]) ?? 1;
+        endDate = DateTime(now.year + years, now.month, now.day);
+      }
+
+      WriteBatch batch = _firestore.batch();
+      DocumentReference userRef = _firestore.collection('users').doc(userId);
+
+      batch.update(userRef, {
+        'subscription.paymentStatus': 'approved',
+        'subscription.startDate': now,
+        'subscription.endDate': endDate,
+        'isAccountActive': true,
+      });
+
+      // Add to payment history
+      DocumentReference historyRef =
+          _firestore.collection('paymentHistory').doc();
+      batch.set(historyRef, {
+        'userId': userId,
+        'amount': price,
+        'planName': planName,
+        'status': 'approved',
+        'processedAt': FieldValue.serverTimestamp(),
+        'processedBy': FirebaseAuth.instance.currentUser?.uid,
+        'startDate': now,
+        'endDate': endDate,
+      });
+
+      // Add notification
+      DocumentReference notificationRef =
+          _firestore.collection('notifications').doc();
+      batch.set(notificationRef, {
+        'userId': userId,
+        'type': 'payment_approved',
+        'message':
+            'Your payment for $planName plan has been approved. Your subscription is now active until ${DateFormat('MMM d, yyyy').format(endDate)}.',
+        'createdAt': FieldValue.serverTimestamp(),
+        'read': false
+      });
+
+      await batch.commit();
+
+      // Enable related data (toilets and maintainers)
+      await _enableRelatedData(userId);
+
+      // Send email notification
+      String emailSubject = 'Payment Approved - Subscription Activated';
+      String emailMessage = '''
+Dear $userName,
+
+We are pleased to inform you that your payment for the $planName plan has been successfully approved.
+
+Payment Details:
+- Plan: $planName
+- Amount: \$${price.toStringAsFixed(2)}
+- Duration: $duration
+- Start Date: ${DateFormat('MMM d, yyyy').format(now)}
+- End Date: ${DateFormat('MMM d, yyyy').format(endDate)}
+
+Your account has been activated and you can now access all features.
+
+Best regards,
+The Support Team
+''';
+
+      await _sendEmailNotification(userEmail, emailSubject, emailMessage);
+      await _loadAllPayments();
+      EasyLoading.dismiss();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Payment approved successfully'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      EasyLoading.dismiss();
+      _handleError('approving payment', e);
+    }
+  }
+
+  Future<void> _rejectPayment(
+      String userId, String reason, String userEmail, String userName) async {
+    try {
+      EasyLoading.show(status: 'Rejecting payment...');
+
+      WriteBatch batch = _firestore.batch();
+      DocumentReference userRef = _firestore.collection('users').doc(userId);
+
+      DocumentSnapshot userDoc = await userRef.get();
+      final userData = userDoc.data() as Map<String, dynamic>;
+      final planName = userData['subscription']['planName'] ?? 'Unknown Plan';
+      final price = userData['subscription']['price'] ?? 0.0;
+
+      batch.update(userRef, {
+        'subscription.paymentStatus': 'rejected',
+        'subscription.rejectionReason': reason,
+        'isAccountActive': false,
+      });
+
+      // Add to payment history
+      DocumentReference historyRef =
+          _firestore.collection('paymentHistory').doc();
+      batch.set(historyRef, {
+        'userId': userId,
+        'status': 'rejected',
+        'reason': reason,
+        'processedAt': FieldValue.serverTimestamp(),
+        'processedBy': FirebaseAuth.instance.currentUser?.uid,
+      });
+
+      // Add notification
+      DocumentReference notificationRef =
+          _firestore.collection('notifications').doc();
+      batch.set(notificationRef, {
+        'userId': userId,
+        'type': 'payment_rejected',
+        'message': 'Your payment was rejected. Reason: $reason',
+        'createdAt': FieldValue.serverTimestamp(),
+        'read': false
+      });
+
+      await batch.commit();
+
+      // Disable related data
+      await _disableRelatedData([userId]);
+
+      // Send email notification
+      String emailSubject = 'Payment Rejected - Action Required';
+      String emailMessage = '''
+Dear $userName,
+
+We regret to inform you that your payment for the $planName plan (\$${price.toStringAsFixed(2)}) has been rejected.
+
+Reason for rejection: 
+$reason
+
+Next Steps:
+1. Please review the reason for rejection above.
+2. Ensure your payment meets all requirements.
+3. You may submit a new payment through your account dashboard.
+
+If you believe this is an error, please contact our support team.
+
+Best regards,
+The Support Team
+''';
+
+      await _sendEmailNotification(userEmail, emailSubject, emailMessage);
+      await _loadAllPayments();
+      EasyLoading.dismiss();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Payment rejected successfully'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    } catch (e) {
+      EasyLoading.dismiss();
+      _handleError('rejecting payment', e);
+    }
+  }
+
+  Future<void> _changeToInactive(
+      String userId, String userEmail, String userName, String reason) async {
+    try {
+      EasyLoading.show(status: 'Moving to inactive...');
+
+      WriteBatch batch = _firestore.batch();
+      DocumentReference userRef = _firestore.collection('users').doc(userId);
+
+      batch.update(userRef, {
+        'subscription.paymentStatus': 'rejected',
+        'subscription.rejectionReason': reason,
+        'isAccountActive': false,
+        'subscription.changedToInactiveAt': FieldValue.serverTimestamp(),
+      });
+
+      // Add notification
+      DocumentReference notificationRef =
+          _firestore.collection('notifications').doc();
+      batch.set(notificationRef, {
+        'userId': userId,
+        'type': 'account_deactivated',
+        'message':
+            'Your account has been deactivated by admin. Reason: $reason',
+        'createdAt': FieldValue.serverTimestamp(),
+        'read': false
+      });
+
+      await batch.commit();
+
+      // Disable related data
+      await _disableRelatedData([userId]);
+
+      // Send email notification
+      String emailSubject = 'Account Deactivated';
+      String emailMessage = '''
+Dear $userName,
+
+Your account has been deactivated by our administrator.
+
+Reason: $reason
+
+Your subscription is no longer active and you will not be able to access our services until you renew your subscription.
+
+If you have any questions, please contact our support team.
+
+Best regards,
+The Support Team
+''';
+
+      await _sendEmailNotification(userEmail, emailSubject,
+          emailMessage); // Changed 'email' to 'userEmail'
+      await _loadAllPayments();
+      EasyLoading.dismiss();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Moved to inactive successfully'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    } catch (e) {
+      EasyLoading.dismiss();
+      _handleError('moving to inactive', e);
+    }
+  }
+
+  Future<void> _changeToActive(String userId, String userEmail, String userName,
+      String planName, double price, String duration) async {
+    try {
+      EasyLoading.show(status: 'Activating account...');
+
+      DateTime now = DateTime.now();
+      DateTime endDate = now;
+
+      if (duration.contains('month')) {
+        int months = int.tryParse(duration.split(' ')[0]) ?? 1;
+        endDate = DateTime(now.year, now.month + months, now.day);
+      } else if (duration.contains('year')) {
+        int years = int.tryParse(duration.split(' ')[0]) ?? 1;
+        endDate = DateTime(now.year + years, now.month, now.day);
+      }
+
+      WriteBatch batch = _firestore.batch();
+      DocumentReference userRef = _firestore.collection('users').doc(userId);
+
+      batch.update(userRef, {
+        'subscription.paymentStatus': 'approved',
+        'subscription.startDate': now,
+        'subscription.endDate': endDate,
+        'isAccountActive': true,
+      });
+
+      // Add notification
+      DocumentReference notificationRef =
+          _firestore.collection('notifications').doc();
+      batch.set(notificationRef, {
+        'userId': userId,
+        'type': 'account_activated',
+        'message':
+            'Your account has been activated. Your subscription is now active until ${DateFormat('MMM d, yyyy').format(endDate)}.',
+        'createdAt': FieldValue.serverTimestamp(),
+        'read': false
+      });
+
+      await batch.commit();
+
+      // Enable related data
+      await _enableRelatedData(userId);
+
+      // Send email notification
+      String emailSubject = 'Account Activated';
+      String emailMessage = '''
+Dear $userName,
+
+Your account has been activated by our administrator.
+
+Subscription Details:
+- Plan: $planName
+- Amount: \$${price.toStringAsFixed(2)}
+- Duration: $duration
+- Start Date: ${DateFormat('MMM d, yyyy').format(now)}
+- End Date: ${DateFormat('MMM d, yyyy').format(endDate)}
+
+You can now access all features of our service.
+
+Best regards,
+The Support Team
+''';
+
+      await _sendEmailNotification(userEmail, emailSubject, emailMessage);
+      await _loadAllPayments();
+      EasyLoading.dismiss();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Account activated successfully'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      EasyLoading.dismiss();
+      _handleError('activating account', e);
+    }
+  }
+
+  Future<void> _deleteVerification(
+      String userId, String userEmail, String userName) async {
+    try {
+      EasyLoading.show(status: 'Deleting account...');
+
+      final callable =
+          FirebaseFunctions.instance.httpsCallable('deleteUserAccount');
+      final result = await callable.call({'userId': userId});
+
+      if (result.data['success'] == true) {
+        // Send email notification
+        String emailSubject = 'Account Deleted';
+        String emailMessage = '''
+Dear $userName,
+
+Your account and all related data have been permanently deleted from our system.
+
+This action cannot be undone. If you wish to use our services again, you will need to create a new account.
+
+If you have any questions, please contact our support team.
+
+Best regards,
+The Support Team
+''';
+
+        await _sendEmailNotification(userEmail, emailSubject, emailMessage);
+        await _loadAllPayments();
+        EasyLoading.dismiss();
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Account deleted successfully'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      } else {
+        EasyLoading.dismiss();
+        _handleError('deleting account', 'Failed to delete account');
+      }
+    } catch (e) {
+      EasyLoading.dismiss();
+      _handleError('deleting account', e);
     }
   }
 
@@ -212,15 +818,12 @@ class _AdminPaymentVerificationScreenState
       'error': error.toString(),
       'timestamp': FieldValue.serverTimestamp(),
       'adminId': FirebaseAuth.instance.currentUser?.uid,
-    }).catchError((e) {
-      print('Failed to log error to Firestore: $e');
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Error during $operation: ${error.toString()}'),
+        content: Text('Error during $operation'),
         backgroundColor: Colors.red,
-        duration: Duration(seconds: 5),
         action: SnackBarAction(
           label: 'DETAILS',
           onPressed: () {
@@ -245,331 +848,7 @@ class _AdminPaymentVerificationScreenState
     );
   }
 
-  Future<void> _loadPendingPayments() async {
-    setState(() {
-      _isLoading = true;
-    });
-
-    try {
-      QuerySnapshot snapshot = await _firestore
-          .collection('users')
-          .where('role', isEqualTo: 'Owner')
-          .get();
-
-      List<Map<String, dynamic>> payments = [];
-
-      for (var doc in snapshot.docs) {
-        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-
-        if (data.containsKey('subscription')) {
-          Map<String, dynamic> subscription = data['subscription'];
-
-          String formattedDate = 'Unknown date';
-          if (data['createdAt'] != null) {
-            formattedDate = DateFormat('MMM d, yyyy - h:mm a')
-                .format((data['createdAt'] as Timestamp).toDate());
-          }
-
-          payments.add({
-            'userId': doc.id,
-            'name': data['name'] ?? 'Unknown',
-            'email': data['email'] ?? 'No email',
-            'planName': subscription['planName'] ?? 'Unknown Plan',
-            'planPrice': subscription['price'] ?? 0.0,
-            'paymentStatus': subscription['paymentStatus'] ?? 'pending',
-            'paymentMethod': subscription['paymentMethod'] ?? 'Unknown',
-            'paymentProofUrl': subscription['paymentProofUrl'] ?? '',
-            'duration': subscription['duration'] ?? '1 month',
-            'createdAt': data['createdAt'],
-            'formattedDate': formattedDate,
-            'isAccountActive': data['isAccountActive'] ?? false,
-          });
-        }
-      }
-
-      payments.sort((a, b) {
-        Timestamp timestampA = a['createdAt'] ?? Timestamp.now();
-        Timestamp timestampB = b['createdAt'] ?? Timestamp.now();
-        return timestampB.compareTo(timestampA);
-      });
-
-      setState(() {
-        _pendingPayments = payments;
-        _filterPayments();
-        _isLoading = false;
-      });
-    } catch (e) {
-      print('Error loading payments: $e');
-      setState(() {
-        _isLoading = false;
-      });
-      _handleError('loading payments', e);
-    }
-  }
-
-  Future<void> _approvePayment(String userId, double price, String planName,
-      String duration, String userEmail) async {
-    try {
-      EasyLoading.show(status: 'Approving payment...');
-      _logAction('approve_payment_start', userId,
-          {'planName': planName, 'price': price, 'duration': duration});
-
-      DateTime now = DateTime.now();
-      DateTime endDate = now;
-
-      if (duration.contains('month')) {
-        int months = int.tryParse(duration.split(' ')[0]) ?? 1;
-        endDate = DateTime(now.year, now.month + months, now.day);
-      } else if (duration.contains('year')) {
-        int years = int.tryParse(duration.split(' ')[0]) ?? 1;
-        endDate = DateTime(now.year + years, now.month, now.day);
-      }
-
-      WriteBatch batch = _firestore.batch();
-      DocumentReference userRef = _firestore.collection('users').doc(userId);
-
-      batch.update(userRef, {
-        'subscription.paymentStatus': 'approved',
-        'subscription.startDate': now,
-        'subscription.endDate': endDate,
-        'isAccountActive': true,
-      });
-
-      DocumentReference historyRef =
-          _firestore.collection('paymentHistory').doc();
-      batch.set(historyRef, {
-        'userId': userId,
-        'amount': price,
-        'planName': planName,
-        'status': 'approved',
-        'processedAt': FieldValue.serverTimestamp(),
-        'processedBy': FirebaseAuth.instance.currentUser?.uid,
-        'startDate': now,
-        'endDate': endDate,
-      });
-
-      DocumentReference notificationRef =
-          _firestore.collection('notifications').doc();
-      batch.set(notificationRef, {
-        'userId': userId,
-        'type': 'payment_approved',
-        'message':
-            'Your payment for $planName plan has been approved. Your subscription is now active until ${DateFormat('MMM d, yyyy').format(endDate)}.',
-        'createdAt': FieldValue.serverTimestamp(),
-        'read': false
-      });
-
-      await batch.commit();
-
-      _logAction('approve_payment_success', userId, {
-        'planName': planName,
-        'price': price,
-        'notificationId': notificationRef.id
-      });
-
-      String emailSubject = 'Payment Approved - Subscription Activated';
-      String emailMessage = '''
-Dear Valued Customer,
-
-We are pleased to inform you that your payment for the $planName plan has been successfully approved.
-
-Payment Details:
-- Plan: $planName
-- Amount: \$${price.toStringAsFixed(2)}
-- Duration: $duration
-- Start Date: ${DateFormat('MMM d, yyyy').format(now)}
-- End Date: ${DateFormat('MMM d, yyyy').format(endDate)}
-
-Your account has now been fully activated, and you can access all the features of your subscription. 
-
-If you have any questions or need assistance, please don't hesitate to contact our support team.
-
-Thank you for choosing our service!
-
-Best regards,
-The Support Team
-''';
-
-      await _sendEmailNotification(userEmail, emailSubject, emailMessage);
-      await _loadPendingPayments();
-      EasyLoading.dismiss();
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Payment approved and notification sent'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } catch (e) {
-      EasyLoading.dismiss();
-      _logAction('approve_payment_error', userId,
-          {'error': e.toString(), 'planName': planName, 'price': price});
-      _handleError('approving payment', e);
-    }
-  }
-
-  Future<void> _rejectPayment(
-      String userId, String reason, String userEmail) async {
-    try {
-      EasyLoading.show(status: 'Rejecting payment...');
-      _logAction('reject_payment_start', userId, {'reason': reason});
-
-      WriteBatch batch = _firestore.batch();
-      DocumentReference userRef = _firestore.collection('users').doc(userId);
-
-      DocumentSnapshot userDoc = await userRef.get();
-      final userData = userDoc.data() as Map<String, dynamic>;
-      final planName = userData['subscription']['planName'] ?? 'Unknown Plan';
-      final price = userData['subscription']['price'] ?? 0.0;
-
-      batch.update(userRef, {
-        'subscription.paymentStatus': 'rejected',
-        'subscription.rejectionReason': reason,
-        'isAccountActive': false,
-      });
-
-      DocumentReference historyRef =
-          _firestore.collection('paymentHistory').doc();
-      batch.set(historyRef, {
-        'userId': userId,
-        'status': 'rejected',
-        'reason': reason,
-        'processedAt': FieldValue.serverTimestamp(),
-        'processedBy': FirebaseAuth.instance.currentUser?.uid,
-      });
-
-      DocumentReference notificationRef =
-          _firestore.collection('notifications').doc();
-      batch.set(notificationRef, {
-        'userId': userId,
-        'type': 'payment_rejected',
-        'message': 'Your payment was rejected. Reason: $reason',
-        'createdAt': FieldValue.serverTimestamp(),
-        'read': false
-      });
-
-      await batch.commit();
-      _logAction('reject_payment_success', userId,
-          {'reason': reason, 'notificationId': notificationRef.id});
-
-      String emailSubject = 'Payment Rejected - Action Required';
-      String emailMessage = '''
-Dear Customer,
-
-We regret to inform you that your payment for the $planName plan (\$${price.toStringAsFixed(2)}) has been rejected.
-
-Reason for rejection: 
-$reason
-
-Next Steps:
-1. Please review the reason for rejection above.
-2. Ensure your payment meets all requirements.
-3. You may submit a new payment through your account dashboard.
-
-If you believe this is an error or need assistance with your payment, please contact our support team immediately.
-
-We apologize for any inconvenience and appreciate your understanding.
-
-Best regards,
-The Support Team
-''';
-
-      await _sendEmailNotification(userEmail, emailSubject, emailMessage);
-      await _loadPendingPayments();
-      EasyLoading.dismiss();
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Payment rejected and notification sent'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-    } catch (e) {
-      EasyLoading.dismiss();
-      _logAction('reject_payment_error', userId,
-          {'error': e.toString(), 'reason': reason});
-      _handleError('rejecting payment', e);
-    }
-  }
-
-  Future<void> _deletePaymentVerification(
-      String userId, String userEmail, String userName) async {
-    try {
-      EasyLoading.show(status: 'Deleting payment verification...');
-      _logAction('delete_payment_verification_start', userId);
-
-      WriteBatch batch = _firestore.batch();
-      DocumentReference userRef = _firestore.collection('users').doc(userId);
-
-      DocumentSnapshot userDoc = await userRef.get();
-      final userData = userDoc.data() as Map<String, dynamic>;
-      final planName = userData['subscription']['planName'] ?? 'Unknown Plan';
-
-      batch.update(userRef, {
-        'subscription': FieldValue.delete(),
-        'isAccountActive': false,
-      });
-
-      DocumentReference historyRef =
-          _firestore.collection('paymentHistory').doc();
-      batch.set(historyRef, {
-        'userId': userId,
-        'action': 'verification_deleted',
-        'processedAt': FieldValue.serverTimestamp(),
-        'processedBy': FirebaseAuth.instance.currentUser?.uid,
-        'notes': 'Payment verification deleted by admin'
-      });
-
-      DocumentReference notificationRef =
-          _firestore.collection('notifications').doc();
-      batch.set(notificationRef, {
-        'userId': userId,
-        'type': 'payment_verification_deleted',
-        'message': 'Your payment verification has been deleted by admin.',
-        'createdAt': FieldValue.serverTimestamp(),
-        'read': false
-      });
-
-      await batch.commit();
-      _logAction('delete_payment_verification_success', userId,
-          {'notificationId': notificationRef.id});
-
-      String emailSubject = 'Payment Verification Deleted';
-      String emailMessage = '''Dear $userName,
-
-This is to inform you that your payment verification for the $planName plan has been deleted by an administrator.
-
-Action Required:
-- If you wish to continue using our services, please submit a new payment through your account dashboard.
-- Ensure all payment details are correct before submission.
-
-For any questions or concerns regarding this action, please contact our support team.
-
-We appreciate your understanding.
-
-Best regards,
-The Support Team
-''';
-
-      await _sendEmailNotification(userEmail, emailSubject, emailMessage);
-      await _loadPendingPayments();
-      EasyLoading.dismiss();
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Payment verification deleted and notification sent'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } catch (e) {
-      EasyLoading.dismiss();
-      _logAction(
-          'delete_payment_verification_error', userId, {'error': e.toString()});
-      _handleError('deleting payment verification', e);
-    }
-  }
-
-  void _showRejectDialog(String userId, String userEmail) {
+  void _showRejectDialog(String userId, String userEmail, String userName) {
     final TextEditingController reasonController = TextEditingController();
 
     showDialog(
@@ -610,11 +889,10 @@ The Support Team
                   return;
                 }
                 Navigator.pop(context);
-                _rejectPayment(userId, reasonController.text.trim(), userEmail);
+                _rejectPayment(
+                    userId, reasonController.text.trim(), userEmail, userName);
               },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-              ),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
               child: Text('Reject'),
             ),
           ],
@@ -624,14 +902,54 @@ The Support Team
   }
 
   void _showDeleteConfirmationDialog(
-      String userId, String userName, String userEmail) {
+      String userId, String userName, String userEmail) async {
+    // First get counts of related data
+    EasyLoading.show(status: 'Checking related data...');
+
+    final toiletsCount = (await _firestore
+            .collection('toilets')
+            .where('ownerId', isEqualTo: userId)
+            .get())
+        .docs
+        .length;
+
+    final maintainersCount = (await _firestore
+            .collection('users')
+            .where('role', isEqualTo: 'Maintainer')
+            .where('assignedOwnerId', isEqualTo: userId)
+            .get())
+        .docs
+        .length;
+
+    EasyLoading.dismiss();
+
     showDialog(
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: Text('Delete Payment Verification'),
-          content: Text(
-              'Are you sure you want to delete the payment verification for $userName? This action cannot be undone.'),
+          title: Text('Permanent Deletion'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                    'Are you sure you want to permanently delete this account and ALL related data?'),
+                SizedBox(height: 16),
+                Text('This will delete:',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                SizedBox(height: 8),
+                Text('• The user account ($userName)'),
+                Text('• $toiletsCount toilet(s) owned by this user'),
+                Text(
+                    '• $maintainersCount maintainer(s) assigned to this owner'),
+                Text('• All reviews for these toilets'),
+                SizedBox(height: 16),
+                Text('This action cannot be undone!',
+                    style: TextStyle(
+                        color: Colors.red, fontWeight: FontWeight.bold)),
+              ],
+            ),
+          ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
@@ -640,12 +958,11 @@ The Support Team
             ElevatedButton(
               onPressed: () {
                 Navigator.pop(context);
-                _deletePaymentVerification(userId, userEmail, userName);
+                _deleteVerification(userId, userEmail, userName);
               },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-              ),
-              child: Text('Delete'),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              child: Text('Delete Permanently',
+                  style: TextStyle(color: Colors.white)),
             ),
           ],
         );
@@ -653,235 +970,482 @@ The Support Team
     );
   }
 
-  void _showPaymentProof(
-      String imageUrl, String userName, String planName, double price) {
-    if (imageUrl.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('No payment slip attached'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-
-    EasyLoading.show(status: 'Loading payment slip...');
-
-    CachedNetworkImageProvider(imageUrl)
-        .resolve(ImageConfiguration())
-        .addListener(
-          ImageStreamListener(
-            (info, _) {
-              EasyLoading.dismiss();
-              _showPaymentProofDialog(imageUrl, userName, planName, price);
-            },
-            onError: (exception, stackTrace) {
-              EasyLoading.dismiss();
-              _handleError('loading payment slip', exception);
-            },
-          ),
-        );
-  }
-
-  void _showPaymentProofDialog(
-      String imageUrl, String userName, String planName, double price) {
+  void _showActivateConfirmationDialog(String userId, String userName,
+      String userEmail, String planName, double price, String duration) {
     showDialog(
       context: context,
-      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('Activate Account'),
+          content: Text(
+              'Are you sure you want to activate $userName\'s account? This will start a new subscription period.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _changeToActive(
+                    userId, userEmail, userName, planName, price, duration);
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+              child: Text('Activate', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showInactiveConfirmationDialog(
+      String userId, String userName, String userEmail) {
+    final TextEditingController reasonController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('Move to Inactive'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                  'Please provide a reason for moving this account to inactive:'),
+              SizedBox(height: 16),
+              TextField(
+                controller: reasonController,
+                decoration: InputDecoration(
+                  labelText: 'Reason',
+                  border: OutlineInputBorder(),
+                  hintText: 'E.g., Payment issue, Violation of terms, etc.',
+                ),
+                maxLines: 3,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (reasonController.text.trim().isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Please provide a reason'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                  return;
+                }
+                Navigator.pop(context);
+                _changeToInactive(
+                    userId, userEmail, userName, reasonController.text.trim());
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+              child: Text('Move to Inactive',
+                  style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showPaymentProof(String imageUrl) {
+    showDialog(
+      context: context,
       builder: (BuildContext context) {
         return Dialog(
-          insetPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
           child: Container(
             width: MediaQuery.of(context).size.width * 0.9,
-            padding: EdgeInsets.all(16),
+            height: MediaQuery.of(context).size.height * 0.8,
             child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Payment Receipt',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                AppBar(
+                  title: Text('Payment Proof'),
+                  leading: IconButton(
+                    icon: Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                  actions: [
                     IconButton(
-                      icon: Icon(Icons.close),
-                      onPressed: () => Navigator.pop(context),
-                    ),
-                  ],
-                ),
-                Divider(),
-                SizedBox(height: 8),
-                Text(
-                  'User: $userName',
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                Text(
-                  'Plan: $planName (${NumberFormat.currency(symbol: '\$').format(price)})',
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                SizedBox(height: 16),
-                Flexible(
-                  child: Container(
-                    constraints: BoxConstraints(
-                      maxHeight: MediaQuery.of(context).size.height * 0.6,
-                    ),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey[300]!),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: PhotoView(
-                        imageProvider: CachedNetworkImageProvider(
-                          imageUrl,
-                          maxHeight: 1000,
-                          maxWidth: 1000,
-                        ),
-                        minScale: PhotoViewComputedScale.contained,
-                        maxScale: PhotoViewComputedScale.covered * 2,
-                        backgroundDecoration: BoxDecoration(
-                          color: Colors.transparent,
-                        ),
-                        loadingBuilder: (context, event) => Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              CircularProgressIndicator(),
-                              if (event != null &&
-                                  event.expectedTotalBytes != null)
-                                Padding(
-                                  padding: EdgeInsets.only(top: 8),
-                                  child: Text(
-                                    'Loading payment slip: ${(event.cumulativeBytesLoaded / event.expectedTotalBytes! * 100).toStringAsFixed(0)}%',
-                                    style: TextStyle(color: Colors.grey[600]),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                        errorBuilder: (context, error, stackTrace) => Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.error, color: Colors.red, size: 48),
-                              SizedBox(height: 8),
-                              Text('Failed to load payment slip',
-                                  style: TextStyle(color: Colors.red)),
-                              SizedBox(height: 4),
-                              Container(
-                                padding: EdgeInsets.all(8),
-                                margin: EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: Colors.grey[200],
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  error.toString(),
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey[700],
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
-                              SizedBox(height: 8),
-                              ElevatedButton.icon(
-                                icon: Icon(Icons.refresh),
-                                label: Text('Try Again'),
-                                onPressed: () {
-                                  Navigator.pop(context);
-                                  _showPaymentProof(
-                                      imageUrl, userName, planName, price);
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                SizedBox(height: 16),
-                Center(
-                  child: Text(
-                    '* Pinch to zoom, drag to pan *',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontStyle: FontStyle.italic,
-                      color: Colors.grey[600],
-                    ),
-                  ),
-                ),
-                SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    ElevatedButton.icon(
-                      icon: Icon(Icons.check, size: 18),
-                      label: Text('Approve'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                      ),
+                      icon: Icon(Icons.copy),
                       onPressed: () {
-                        Navigator.pop(context);
-                        final payment = _pendingPayments.firstWhere(
-                          (p) =>
-                              p['name'] == userName &&
-                              p['planName'] == planName,
-                          orElse: () => {},
+                        Clipboard.setData(ClipboardData(text: imageUrl));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('URL copied to clipboard')),
                         );
-                        if (payment.isNotEmpty) {
-                          _approvePayment(
-                            payment['userId'],
-                            payment['planPrice'],
-                            payment['planName'],
-                            payment['duration'],
-                            payment['email'],
-                          );
-                        }
-                      },
-                    ),
-                    ElevatedButton.icon(
-                      icon: Icon(Icons.close, size: 18),
-                      label: Text('Reject'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.red,
-                      ),
-                      onPressed: () {
-                        Navigator.pop(context);
-                        final payment = _pendingPayments.firstWhere(
-                          (p) =>
-                              p['name'] == userName &&
-                              p['planName'] == planName,
-                          orElse: () => {},
-                        );
-                        if (payment.isNotEmpty) {
-                          _showRejectDialog(
-                              payment['userId'], payment['email']);
-                        }
                       },
                     ),
                   ],
+                ),
+                Expanded(
+                  child: PhotoView(
+                    imageProvider: CachedNetworkImageProvider(imageUrl),
+                    backgroundDecoration: BoxDecoration(color: Colors.white),
+                    minScale: PhotoViewComputedScale.contained,
+                    maxScale: PhotoViewComputedScale.covered * 3,
+                  ),
                 ),
               ],
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _buildPaymentCard(Map<String, dynamic> payment, String tabType) {
+    return Card(
+      margin: EdgeInsets.all(8.0),
+      elevation: 4,
+      child: Padding(
+        padding: EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header with name and status
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    payment['name'] ?? 'Unknown',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _getStatusColor(payment['paymentStatus']),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    payment['paymentStatus']?.toUpperCase() ?? 'UNKNOWN',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: 8),
+
+            // Email
+            Row(
+              children: [
+                Icon(Icons.email, size: 16, color: Colors.grey[600]),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    payment['email'] ?? 'No email',
+                    style: TextStyle(color: Colors.grey[700]),
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: 4),
+
+            // Plan details
+            Row(
+              children: [
+                Icon(Icons.subscriptions, size: 16, color: Colors.grey[600]),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${payment['planName']} - \$${payment['planPrice']?.toStringAsFixed(2) ?? '0.00'} (${payment['duration']})',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      color: Colors.blue[700],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: 4),
+
+            // Payment method
+            Row(
+              children: [
+                Icon(Icons.payment, size: 16, color: Colors.grey[600]),
+                SizedBox(width: 8),
+                Text(
+                  'Payment Method: ${payment['paymentMethod'] ?? 'Unknown'}',
+                  style: TextStyle(color: Colors.grey[700]),
+                ),
+              ],
+            ),
+            SizedBox(height: 4),
+
+            // Date
+            Row(
+              children: [
+                Icon(Icons.calendar_today, size: 16, color: Colors.grey[600]),
+                SizedBox(width: 8),
+                Text(
+                  'Created: ${payment['formattedDate']}',
+                  style: TextStyle(color: Colors.grey[700]),
+                ),
+              ],
+            ),
+
+            // Show subscription dates for active payments
+            if (tabType == 'active' &&
+                payment['startDate'] != null &&
+                payment['endDate'] != null) ...[
+              SizedBox(height: 4),
+              Row(
+                children: [
+                  Icon(Icons.date_range, size: 16, color: Colors.green[600]),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Active: ${DateFormat('MMM d, yyyy').format((payment['startDate'] as Timestamp).toDate())} - ${DateFormat('MMM d, yyyy').format((payment['endDate'] as Timestamp).toDate())}',
+                      style: TextStyle(
+                        color: Colors.green[700],
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+
+            // Show rejection reason for rejected payments
+            if (payment['rejectionReason'] != null &&
+                payment['rejectionReason'].toString().isNotEmpty) ...[
+              SizedBox(height: 8),
+              Container(
+                padding: EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.red[50],
+                  border: Border.all(color: Colors.red[200]!),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.error_outline, size: 16, color: Colors.red[600]),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Rejection Reason: ${payment['rejectionReason']}',
+                        style: TextStyle(
+                          color: Colors.red[700],
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            SizedBox(height: 12),
+
+            // Payment proof and actions
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // Payment proof button
+                if (payment['paymentProofUrl'] != null &&
+                    payment['paymentProofUrl'].toString().isNotEmpty)
+                  ElevatedButton.icon(
+                    onPressed: () =>
+                        _showPaymentProof(payment['paymentProofUrl']),
+                    icon: Icon(Icons.image, size: 16),
+                    label: Text('View Proof'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                      padding:
+                          EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    ),
+                  )
+                else
+                  Text(
+                    'No payment proof',
+                    style: TextStyle(
+                      color: Colors.red[600],
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+
+                // Action buttons based on tab
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: _buildActionButtons(payment, tabType),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildActionButtons(
+      Map<String, dynamic> payment, String tabType) {
+    switch (tabType) {
+      case 'pending':
+      case 'renew':
+        return [
+          ElevatedButton(
+            onPressed: () => _approvePayment(
+              payment['userId'],
+              payment['planPrice']?.toDouble() ?? 0.0,
+              payment['planName'] ?? '',
+              payment['duration'] ?? '1 month',
+              payment['email'] ?? '',
+              payment['name'] ?? '',
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+            child: Text('Approve'),
+          ),
+          SizedBox(width: 8),
+          ElevatedButton(
+            onPressed: () => _showRejectDialog(
+              payment['userId'],
+              payment['email'] ?? '',
+              payment['name'] ?? '',
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+            child: Text('Reject'),
+          ),
+        ];
+
+      case 'active':
+        return [
+          ElevatedButton(
+            onPressed: () => _showInactiveConfirmationDialog(
+              payment['userId'],
+              payment['name'] ?? '',
+              payment['email'] ?? '',
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orange,
+              foregroundColor: Colors.white,
+              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+            child: Text('Move to Inactive'),
+          ),
+        ];
+
+      case 'inactive':
+        return [
+          ElevatedButton(
+            onPressed: () => _showActivateConfirmationDialog(
+              payment['userId'],
+              payment['name'] ?? '',
+              payment['email'] ?? '',
+              payment['planName'] ?? '',
+              payment['planPrice']?.toDouble() ?? 0.0,
+              payment['duration'] ?? '1 month',
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+            child: Text('Activate'),
+          ),
+          SizedBox(width: 8),
+          ElevatedButton(
+            onPressed: () => _showDeleteConfirmationDialog(
+              payment['userId'],
+              payment['name'] ?? '',
+              payment['email'] ?? '',
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+            child: Text('Delete'),
+          ),
+        ];
+
+      default:
+        return [];
+    }
+  }
+
+  Color _getStatusColor(String? status) {
+    switch (status?.toLowerCase()) {
+      case 'approved':
+        return Colors.green;
+      case 'pending':
+        return Colors.orange;
+      case 'rejected':
+      case 'expired':
+        return Colors.red;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  Widget _buildTabContent(List<Map<String, dynamic>> payments, String tabType) {
+    if (_isLoading) {
+      return Center(child: CircularProgressIndicator());
+    }
+
+    if (payments.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.inbox,
+              size: 64,
+              color: Colors.grey[400],
+            ),
+            SizedBox(height: 16),
+            Text(
+              'No ${tabType.toLowerCase()} payments found',
+              style: TextStyle(
+                fontSize: 18,
+                color: Colors.grey[600],
+              ),
+            ),
+            if (_searchQuery.isNotEmpty) ...[
+              SizedBox(height: 8),
+              Text(
+                'Try adjusting your search criteria',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey[500],
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadAllPayments,
+      child: ListView.builder(
+        itemCount: payments.length,
+        itemBuilder: (context, index) {
+          return _buildPaymentCard(payments[index], tabType);
+        },
+      ),
     );
   }
 
@@ -890,560 +1454,167 @@ The Support Team
     return Scaffold(
       appBar: AppBar(
         title: Text('Payment Verification'),
-        backgroundColor: Color(0xFF2E86DE),
+        backgroundColor: Colors.blue[700],
+        foregroundColor: Colors.white,
         elevation: 0,
         actions: [
           IconButton(
-            icon: Icon(Icons.notifications),
-            tooltip: 'Check notifications',
-            onPressed: _checkNotificationStatus,
-          ),
-          IconButton(
+            onPressed: _loadAllPayments,
             icon: Icon(Icons.refresh),
-            tooltip: 'Refresh payments',
-            onPressed: _loadPendingPayments,
+            tooltip: 'Refresh',
           ),
         ],
+        bottom: PreferredSize(
+          preferredSize: Size.fromHeight(60),
+          child: Padding(
+            padding: EdgeInsets.all(8.0),
+            child: TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: 'Search by name, email, or plan...',
+                prefixIcon: Icon(Icons.search),
+                suffixIcon: _searchQuery.isNotEmpty
+                    ? IconButton(
+                        onPressed: () {
+                          _searchController.clear();
+                        },
+                        icon: Icon(Icons.clear),
+                      )
+                    : null,
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(25),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              ),
+            ),
+          ),
+        ),
       ),
       body: Column(
         children: [
+          // Tab headers with counts
           Container(
-            padding: EdgeInsets.all(16),
-            color: Color(0xFF2E86DE).withOpacity(0.1),
-            child: Column(
-              children: [
-                TextField(
-                  controller: _searchController,
-                  decoration: InputDecoration(
-                    hintText: 'Search by name, email or plan',
-                    prefixIcon: Icon(Icons.search),
-                    filled: true,
-                    fillColor: Colors.white,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide.none,
-                    ),
-                    contentPadding: EdgeInsets.symmetric(vertical: 0),
-                  ),
-                ),
-                SizedBox(height: 12),
-                Row(
-                  children: [
-                    Text(
-                      'Filter: ',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Container(
-                        padding: EdgeInsets.symmetric(horizontal: 12),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.grey[300]!),
-                        ),
-                        child: DropdownButtonHideUnderline(
-                          child: DropdownButton<String>(
-                            value: _selectedFilter,
-                            isExpanded: true,
-                            onChanged: (String? newValue) {
-                              if (newValue != null) {
-                                setState(() {
-                                  _selectedFilter = newValue;
-                                  _filterPayments();
-                                });
-                              }
-                            },
-                            items: _filterOptions
-                                .map<DropdownMenuItem<String>>((String value) {
-                              return DropdownMenuItem<String>(
-                                value: value,
-                                child: Text(value),
-                              );
-                            }).toList(),
+            color: Colors.blue[700],
+            child: TabBar(
+              controller: _tabController,
+              indicatorColor: Colors.white,
+              indicatorWeight: 3,
+              labelColor: Colors.white,
+              unselectedLabelColor: Colors.white70,
+              tabs: [
+                Tab(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text('Pending'),
+                      if (_filteredPending.isNotEmpty)
+                        Container(
+                          margin: EdgeInsets.only(top: 2),
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.orange,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '${_filteredPending.length}',
+                            style: TextStyle(
+                                fontSize: 10, fontWeight: FontWeight.bold),
                           ),
                         ),
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
+                ),
+                Tab(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text('Active'),
+                      if (_filteredActive.isNotEmpty)
+                        Container(
+                          margin: EdgeInsets.only(top: 2),
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.green,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '${_filteredActive.length}',
+                            style: TextStyle(
+                                fontSize: 10, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                Tab(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text('Inactive'),
+                      if (_filteredInactive.isNotEmpty)
+                        Container(
+                          margin: EdgeInsets.only(top: 2),
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '${_filteredInactive.length}',
+                            style: TextStyle(
+                                fontSize: 10, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                Tab(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text('Renew'),
+                      if (_filteredRenew.isNotEmpty)
+                        Container(
+                          margin: EdgeInsets.only(top: 2),
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.purple,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '${_filteredRenew.length}',
+                            style: TextStyle(
+                                fontSize: 10, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ],
             ),
           ),
-          Container(
-            padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-            color: Colors.grey[100],
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _buildStatCard(
-                  'Pending',
-                  _pendingPayments
-                      .where((p) => p['paymentStatus'] == 'pending')
-                      .length
-                      .toString(),
-                  Colors.orange,
-                ),
-                _buildStatCard(
-                  'Approved',
-                  _pendingPayments
-                      .where((p) => p['paymentStatus'] == 'approved')
-                      .length
-                      .toString(),
-                  Colors.green,
-                ),
-                _buildStatCard(
-                  'Rejected',
-                  _pendingPayments
-                      .where((p) => p['paymentStatus'] == 'rejected')
-                      .length
-                      .toString(),
-                  Colors.red,
-                ),
-              ],
-            ),
-          ),
+          // Tab content
           Expanded(
-            child: _isLoading
-                ? Center(child: CircularProgressIndicator())
-                : _filteredPayments.isEmpty
-                    ? Center(
-                        child: Text(
-                          'No payment records found',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                      )
-                    : RefreshIndicator(
-                        onRefresh: _loadPendingPayments,
-                        child: ListView.builder(
-                          itemCount: _filteredPayments.length,
-                          itemBuilder: (context, index) {
-                            final payment = _filteredPayments[index];
-                            return _buildPaymentCard(payment);
-                          },
-                        ),
-                      ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatCard(String title, String count, Color color) {
-    return Column(
-      children: [
-        Text(
-          count,
-          style: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.bold,
-            color: color,
-          ),
-        ),
-        Text(
-          title,
-          style: TextStyle(
-            fontSize: 14,
-            color: Colors.grey[700],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPaymentCard(Map<String, dynamic> payment) {
-    Color statusColor;
-    IconData statusIcon;
-
-    switch (payment['paymentStatus']) {
-      case 'approved':
-        statusColor = Colors.green;
-        statusIcon = Icons.check_circle;
-        break;
-      case 'rejected':
-        statusColor = Colors.red;
-        statusIcon = Icons.cancel;
-        break;
-      default:
-        statusColor = Colors.orange;
-        statusIcon = Icons.pending;
-    }
-
-    return Card(
-      margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      elevation: 2,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(
-          color: payment['paymentStatus'] == 'pending'
-              ? Colors.orange.withOpacity(0.5)
-              : Colors.grey.withOpacity(0.2),
-          width: payment['paymentStatus'] == 'pending' ? 1.5 : 1,
-        ),
-      ),
-      child: Column(
-        children: [
-          ListTile(
-            contentPadding: EdgeInsets.all(16),
-            leading: CircleAvatar(
-              backgroundColor: Color(0xFF2E86DE).withOpacity(0.1),
-              child: Icon(
-                Icons.person,
-                color: Color(0xFF2E86DE),
-              ),
-            ),
-            title: Text(
-              payment['name'],
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
-            ),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: TabBarView(
+              controller: _tabController,
               children: [
-                SizedBox(height: 4),
-                Text(payment['email']),
-                SizedBox(height: 4),
-                Text(
-                  'Submitted: ${payment['formattedDate']}',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey[600],
-                  ),
-                ),
-              ],
-            ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  statusIcon,
-                  color: statusColor,
-                ),
-                SizedBox(width: 8),
-                Text(
-                  payment['paymentStatus'].toUpperCase(),
-                  style: TextStyle(
-                    color: statusColor,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Divider(height: 1),
-          if (payment['paymentProofUrl'] != null &&
-              payment['paymentProofUrl'].isNotEmpty)
-            Container(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              width: double.infinity,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Payment Slip:',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w500,
-                      fontSize: 14,
-                      color: Colors.grey[700],
-                    ),
-                  ),
-                  SizedBox(height: 8),
-                  Container(
-                    height: 160,
-                    width: double.infinity,
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey[300]!),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        Container(color: Colors.grey[200]),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(7),
-                          child: CachedNetworkImage(
-                            imageUrl: payment['paymentProofUrl'],
-                            fit: BoxFit.cover,
-                            placeholder: (context, url) => Center(
-                              child: CircularProgressIndicator(
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                    Color(0xFF2E86DE)),
-                              ),
-                            ),
-                            errorWidget: (context, url, error) {
-                              return Center(
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.broken_image,
-                                        color: Colors.red, size: 32),
-                                    SizedBox(height: 8),
-                                    Padding(
-                                      padding:
-                                          EdgeInsets.symmetric(horizontal: 8),
-                                      child: Text(
-                                        'Could not load payment slip',
-                                        textAlign: TextAlign.center,
-                                        style:
-                                            TextStyle(color: Colors.red[700]),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                        Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(7),
-                            onTap: () => _showPaymentProof(
-                              payment['paymentProofUrl'],
-                              payment['name'],
-                              payment['planName'],
-                              payment['planPrice'],
-                            ),
-                            child: Center(
-                              child: Container(
-                                padding: EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withOpacity(0.5),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: Icon(
-                                  Icons.zoom_in,
-                                  color: Colors.white,
-                                  size: 24,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          Padding(
-            padding: EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Plan: ${payment['planName']}',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    Text(
-                      NumberFormat.currency(symbol: '\$')
-                          .format(payment['planPrice']),
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 18,
-                        color: Color(0xFF2E86DE),
-                      ),
-                    ),
-                  ],
-                ),
-                SizedBox(height: 8),
-                Text('Payment Method: ${payment['paymentMethod']}'),
-                SizedBox(height: 16),
-                if (payment['paymentProofUrl'] != null &&
-                    payment['paymentProofUrl'].isNotEmpty)
-                  Container(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: () => _showPaymentProof(
-                        payment['paymentProofUrl'],
-                        payment['name'],
-                        payment['planName'],
-                        payment['planPrice'],
-                      ),
-                      icon: Icon(Icons.receipt_long),
-                      label: Text('View Payment Slip'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Color(0xFF2E86DE),
-                        padding:
-                            EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      ),
-                    ),
-                  ),
-                if (payment['paymentStatus'] == 'pending')
-                  Padding(
-                    padding: const EdgeInsets.only(top: 16),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            onPressed: () => _approvePayment(
-                              payment['userId'],
-                              payment['planPrice'],
-                              payment['planName'],
-                              payment['duration'],
-                              payment['email'],
-                            ),
-                            icon: Icon(Icons.check),
-                            label: Text('Approve'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.green,
-                              padding: EdgeInsets.symmetric(vertical: 12),
-                            ),
-                          ),
-                        ),
-                        SizedBox(width: 12),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: () => _showRejectDialog(
-                                payment['userId'], payment['email']),
-                            icon: Icon(Icons.close, color: Colors.red),
-                            label: Text(
-                              'Reject',
-                              style: TextStyle(color: Colors.red),
-                            ),
-                            style: OutlinedButton.styleFrom(
-                              side: BorderSide(color: Colors.red),
-                              padding: EdgeInsets.symmetric(vertical: 12),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                if (payment['paymentStatus'] != 'pending')
-                  Padding(
-                    padding: const EdgeInsets.only(top: 16),
-                    child: Column(
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton(
-                                onPressed: () async {
-                                  if (payment['paymentStatus'] == 'approved') {
-                                    _showRejectDialog(
-                                        payment['userId'], payment['email']);
-                                  } else {
-                                    await _approvePayment(
-                                      payment['userId'],
-                                      payment['planPrice'],
-                                      payment['planName'],
-                                      payment['duration'],
-                                      payment['email'],
-                                    );
-                                  }
-                                },
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor:
-                                      payment['paymentStatus'] == 'approved'
-                                          ? Colors.red.withOpacity(0.8)
-                                          : Colors.green,
-                                  padding: EdgeInsets.symmetric(vertical: 12),
-                                ),
-                                child: Text(
-                                    payment['paymentStatus'] == 'approved'
-                                        ? 'Change to Rejected'
-                                        : 'Change to Approved'),
-                              ),
-                            ),
-                          ],
-                        ),
-                        SizedBox(height: 12),
-                        OutlinedButton.icon(
-                          onPressed: () => _showDeleteConfirmationDialog(
-                              payment['userId'],
-                              payment['name'],
-                              payment['email']),
-                          icon: Icon(Icons.delete, color: Colors.red),
-                          label: Text(
-                            'Delete Verification',
-                            style: TextStyle(color: Colors.red),
-                          ),
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(color: Colors.red),
-                            padding: EdgeInsets.symmetric(vertical: 12),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                _buildTabContent(_filteredPending, 'pending'),
+                _buildTabContent(_filteredActive, 'active'),
+                _buildTabContent(_filteredInactive, 'inactive'),
+                _buildTabContent(_filteredRenew, 'renew'),
               ],
             ),
           ),
         ],
       ),
     );
-  }
-
-  Future<void> _checkNotificationStatus() async {
-    try {
-      EasyLoading.show(status: 'Checking notifications...');
-      QuerySnapshot snapshot = await _firestore
-          .collection('notifications')
-          .orderBy('createdAt', descending: true)
-          .limit(20)
-          .get();
-
-      List<Map<String, dynamic>> recentNotifications = snapshot.docs
-          .map((doc) => {
-                'id': doc.id,
-                ...doc.data() as Map<String, dynamic>,
-              })
-          .toList();
-
-      EasyLoading.dismiss();
-
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text('Recent Notifications'),
-          content: Container(
-            width: double.maxFinite,
-            height: 300,
-            child: ListView.builder(
-              itemCount: recentNotifications.length,
-              itemBuilder: (context, index) {
-                final notification = recentNotifications[index];
-                final DateTime? createdAt = notification['createdAt'] != null
-                    ? (notification['createdAt'] as Timestamp).toDate()
-                    : null;
-                return ListTile(
-                  title: Text(notification['message'] ?? 'No message'),
-                  subtitle: Text(
-                      'User ID: ${notification['userId'] ?? 'Unknown'}\n'
-                      'Type: ${notification['type'] ?? 'Unknown'}\n'
-                      'Date: ${createdAt != null ? DateFormat('MMM d, yyyy • h:mm a').format(createdAt) : 'Unknown'}'),
-                  trailing: notification['read'] == true
-                      ? Icon(Icons.check_circle, color: Colors.green)
-                      : Icon(Icons.circle, color: Colors.red),
-                );
-              },
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('CLOSE'),
-            ),
-          ],
-        ),
-      );
-    } catch (e) {
-      EasyLoading.dismiss();
-      _handleError('checking notifications', e);
-    }
   }
 }

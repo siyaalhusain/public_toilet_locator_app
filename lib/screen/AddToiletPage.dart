@@ -68,7 +68,6 @@ class _AddToiletPageState extends State<AddToiletPage> {
     {"name": "Bathing", "icon": Icons.shower, "color": Colors.teal},
     {"name": "Private", "icon": Icons.visibility_off, "color": Colors.red},
     {"name": "Open to Public", "icon": Icons.public, "color": Colors.green},
-    {"name": "All", "icon": Icons.all_inbox, "color": Colors.amber}
   ];
   Set<String> selectedAmenities = {};
 

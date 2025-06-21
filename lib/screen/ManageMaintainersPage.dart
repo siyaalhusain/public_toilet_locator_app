@@ -244,30 +244,27 @@ class _ImprovedManageMaintainersPageState
         : 'Unknown date';
 
     return Card(
-      margin: const EdgeInsets.symmetric(
-          horizontal: 8, vertical: 6), // Reduced horizontal margin
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10), // Reduced from 12
+        borderRadius: BorderRadius.circular(10),
       ),
-      elevation: 1, // Reduced from 2
+      elevation: 1,
       child: Padding(
-        padding:
-            const EdgeInsets.all(8.0), // Further reduced padding from 12 to 8
+        padding: const EdgeInsets.all(8.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min, // Added to minimize row width
+              mainAxisSize: MainAxisSize.min,
               children: [
                 CircleAvatar(
-                  radius: 18, // Further reduced from 22 to 18
+                  radius: 18,
                   backgroundColor: Colors.blue.shade100,
-                  child: Icon(Icons.person,
-                      color: Colors.blue.shade800,
-                      size: 20), // Reduced from 26 to 20
+                  child:
+                      Icon(Icons.person, color: Colors.blue.shade800, size: 20),
                 ),
-                const SizedBox(width: 8), // Reduced from 10 to 8
+                const SizedBox(width: 8),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -275,24 +272,22 @@ class _ImprovedManageMaintainersPageState
                       Text(
                         fullName,
                         style: const TextStyle(
-                          fontSize: 15, // Further reduced from 16
+                          fontSize: 15,
                           fontWeight: FontWeight.bold,
                         ),
                         overflow: TextOverflow.ellipsis,
                       ),
-                      const SizedBox(height: 2), // Reduced from 4 to 2
+                      const SizedBox(height: 2),
                       Row(
                         children: [
-                          Icon(Icons.email,
-                              size: 12,
-                              color: Colors.grey[600]), // Reduced from 14 to 12
-                          const SizedBox(width: 3), // Reduced from 4 to 3
+                          Icon(Icons.email, size: 12, color: Colors.grey[600]),
+                          const SizedBox(width: 3),
                           Expanded(
                             child: Text(
                               email,
                               style: TextStyle(
                                 color: Colors.grey[700],
-                                fontSize: 12, // Reduced from 13 to 12
+                                fontSize: 12,
                               ),
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -301,21 +296,18 @@ class _ImprovedManageMaintainersPageState
                       ),
                       if (phone != 'No phone')
                         Padding(
-                          padding: const EdgeInsets.only(
-                              top: 1), // Reduced from 2 to 1
+                          padding: const EdgeInsets.only(top: 1),
                           child: Row(
                             children: [
                               Icon(Icons.phone,
-                                  size: 12,
-                                  color: Colors
-                                      .grey[600]), // Reduced from 14 to 12
-                              const SizedBox(width: 3), // Reduced from 4 to 3
+                                  size: 12, color: Colors.grey[600]),
+                              const SizedBox(width: 3),
                               Expanded(
                                 child: Text(
                                   phone,
                                   style: TextStyle(
                                     color: Colors.grey[700],
-                                    fontSize: 12, // Reduced from 13 to 12
+                                    fontSize: 12,
                                   ),
                                   overflow: TextOverflow.ellipsis,
                                 ),
@@ -323,29 +315,99 @@ class _ImprovedManageMaintainersPageState
                             ],
                           ),
                         ),
-                      const SizedBox(height: 1), // Reduced from 2 to 1
+                      const SizedBox(height: 1),
                       Row(
                         children: [
                           Icon(Icons.calendar_today,
-                              size: 12,
-                              color: Colors.grey[600]), // Reduced from 14 to 12
-                          const SizedBox(width: 3), // Reduced from 4 to 3
+                              size: 12, color: Colors.grey[600]),
+                          const SizedBox(width: 3),
                           Expanded(
                             child: Text(
                               'Added: $formattedDate',
                               style: TextStyle(
                                 color: Colors.grey[700],
-                                fontSize: 12, // Reduced from 13 to 12
+                                fontSize: 12,
                               ),
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         ],
                       ),
+                      // Add assigned toilets section here
+                      FutureBuilder<List<Map<String, dynamic>>>(
+                        future: _fetchAssignedToilets(maintainer.id),
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState ==
+                              ConnectionState.waiting) {
+                            return const Padding(
+                              padding: EdgeInsets.only(top: 4),
+                              child: SizedBox(
+                                height: 12,
+                                width: 12,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            );
+                          }
+
+                          if (snapshot.hasError ||
+                              !snapshot.hasData ||
+                              snapshot.data!.isEmpty) {
+                            return const SizedBox(); // Don't show anything if no toilets
+                          }
+
+                          final toilets = snapshot.data!;
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(Icons.bathroom,
+                                    size: 12, color: Colors.grey[600]),
+                                const SizedBox(width: 3),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Assigned Toilets:',
+                                        style: TextStyle(
+                                          color: Colors.grey[700],
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                      ...toilets.take(2).map((toilet) {
+                                        return Text(
+                                          '• ${toilet['name'] ?? 'Unnamed Toilet'}',
+                                          style: TextStyle(
+                                            color: Colors.grey[700],
+                                            fontSize: 11,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        );
+                                      }).toList(),
+                                      if (toilets.length > 2)
+                                        Text(
+                                          '+ ${toilets.length - 2} more...',
+                                          style: TextStyle(
+                                            color: Colors.grey[600],
+                                            fontSize: 11,
+                                            fontStyle: FontStyle.italic,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
                     ],
                   ),
                 ),
-                // Changed to a column layout for buttons to save horizontal space
                 Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [

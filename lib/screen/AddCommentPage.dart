@@ -358,11 +358,17 @@ class _AddCommentPageState extends State<AddCommentPage> {
               _categoryRatings.length);
       _rating = (calculatedRating * 2).round() / 2;
 
+      // Ensure user details are included in the review
+      String userId = user?.uid ?? "anonymous";
+      String userName = user?.displayName ?? "Unknown User";
+      String userPhotoUrl = user?.photoURL ?? "";
+
       await FirebaseFirestore.instance.collection('washroom_reviews').add({
         'toilet_id': _selectedToiletId,
         'toilet_name': _selectedToiletName,
-        'user_id': user?.uid ?? "anonymous",
-        'user_name': user?.displayName ?? "Unknown User",
+        'user_id': userId,
+        'user_name': userName, // Include user's name
+        'user_photo_url': userPhotoUrl, // Include user's photo URL if available
         'comment': commentText,
         'image_url': imageUrl,
         'rating': _rating,
@@ -373,11 +379,7 @@ class _AddCommentPageState extends State<AddCommentPage> {
           _userLocation?.latitude ?? 0,
           _userLocation?.longitude ?? 0,
         ),
-        'user_photo_url': user?.photoURL,
       });
-      // Add at the top
-
-// After successful review submission
 
       await _updateToiletRating();
       _showSnackBar("Review added successfully!", Colors.green);
