@@ -393,59 +393,6 @@ class _AdminPaymentVerificationScreenState
     }
   }
 
-  Future<void> _sendEmailNotification(
-      String userEmail, String subject, String message) async {
-    try {
-      final HttpsCallable callable =
-          _functions.httpsCallable('sendEmailNotification');
-      await callable.call({
-        'email': userEmail,
-        'subject': subject,
-        'message': message,
-        'type': 'payment_verification'
-      });
-    } catch (e) {
-      print('Error sending email: $e');
-      await _queueEmailNotification(userEmail, subject, message);
-    }
-  }
-
-  Future<void> _queueEmailNotification(
-      String userEmail, String subject, String message) async {
-    try {
-      await _firestore.collection('email_queue').add({
-        'email': userEmail,
-        'subject': subject,
-        'message': message,
-        'type': 'payment_verification',
-        'createdAt': FieldValue.serverTimestamp(),
-        'attempts': 0,
-        'status': 'pending'
-      });
-    } catch (e) {
-      print('Failed to queue email: $e');
-    }
-  }
-
-  Future<void> _sendSubscriptionExpiredEmail(
-      String email, String name, String planName) async {
-    String subject = 'Subscription Expired - Renewal Required';
-    String message = '''
-Dear $name,
-
-Your subscription for the $planName plan has expired.
-
-To continue using our services, please renew your subscription by logging into your account and selecting a new plan.
-
-If you have any questions, please contact our support team.
-
-Best regards,
-The Support Team
-''';
-
-    await _sendEmailNotification(email, subject, message);
-  }
-
   Future<void> _approvePayment(String userId, double price, String planName,
       String duration, String userEmail, String userName) async {
     try {
@@ -495,7 +442,8 @@ The Support Team
         'message':
             'Your payment for $planName plan has been approved. Your subscription is now active until ${DateFormat('MMM d, yyyy').format(endDate)}.',
         'createdAt': FieldValue.serverTimestamp(),
-        'read': false
+        'isRead': false,
+        'isAdminNotification': false // This goes to owner's notifications
       });
 
       await batch.commit();
@@ -504,26 +452,7 @@ The Support Team
       await _enableRelatedData(userId);
 
       // Send email notification
-      String emailSubject = 'Payment Approved - Subscription Activated';
-      String emailMessage = '''
-Dear $userName,
 
-We are pleased to inform you that your payment for the $planName plan has been successfully approved.
-
-Payment Details:
-- Plan: $planName
-- Amount: \$${price.toStringAsFixed(2)}
-- Duration: $duration
-- Start Date: ${DateFormat('MMM d, yyyy').format(now)}
-- End Date: ${DateFormat('MMM d, yyyy').format(endDate)}
-
-Your account has been activated and you can now access all features.
-
-Best regards,
-The Support Team
-''';
-
-      await _sendEmailNotification(userEmail, emailSubject, emailMessage);
       await _loadAllPayments();
       EasyLoading.dismiss();
 
@@ -577,7 +506,8 @@ The Support Team
         'type': 'payment_rejected',
         'message': 'Your payment was rejected. Reason: $reason',
         'createdAt': FieldValue.serverTimestamp(),
-        'read': false
+        'isRead': false,
+        'isAdminNotification': false // This goes to owner's notifications
       });
 
       await batch.commit();
@@ -586,27 +516,7 @@ The Support Team
       await _disableRelatedData([userId]);
 
       // Send email notification
-      String emailSubject = 'Payment Rejected - Action Required';
-      String emailMessage = '''
-Dear $userName,
 
-We regret to inform you that your payment for the $planName plan (\$${price.toStringAsFixed(2)}) has been rejected.
-
-Reason for rejection: 
-$reason
-
-Next Steps:
-1. Please review the reason for rejection above.
-2. Ensure your payment meets all requirements.
-3. You may submit a new payment through your account dashboard.
-
-If you believe this is an error, please contact our support team.
-
-Best regards,
-The Support Team
-''';
-
-      await _sendEmailNotification(userEmail, emailSubject, emailMessage);
       await _loadAllPayments();
       EasyLoading.dismiss();
 
@@ -646,33 +556,14 @@ The Support Team
         'message':
             'Your account has been deactivated by admin. Reason: $reason',
         'createdAt': FieldValue.serverTimestamp(),
-        'read': false
+        'read': false,
+        'isAdminNotification': false // Add this flag
       });
 
       await batch.commit();
 
       // Disable related data
       await _disableRelatedData([userId]);
-
-      // Send email notification
-      String emailSubject = 'Account Deactivated';
-      String emailMessage = '''
-Dear $userName,
-
-Your account has been deactivated by our administrator.
-
-Reason: $reason
-
-Your subscription is no longer active and you will not be able to access our services until you renew your subscription.
-
-If you have any questions, please contact our support team.
-
-Best regards,
-The Support Team
-''';
-
-      await _sendEmailNotification(userEmail, emailSubject,
-          emailMessage); // Changed 'email' to 'userEmail'
       await _loadAllPayments();
       EasyLoading.dismiss();
 
@@ -712,6 +603,8 @@ The Support Team
         'subscription.startDate': now,
         'subscription.endDate': endDate,
         'isAccountActive': true,
+        'subscription.rejectionReason':
+            FieldValue.delete(), // Clear rejection reason
       });
 
       // Add notification
@@ -723,7 +616,8 @@ The Support Team
         'message':
             'Your account has been activated. Your subscription is now active until ${DateFormat('MMM d, yyyy').format(endDate)}.',
         'createdAt': FieldValue.serverTimestamp(),
-        'read': false
+        'read': false,
+        'isAdminNotification': false // Add this flag
       });
 
       await batch.commit();
@@ -731,28 +625,27 @@ The Support Team
       // Enable related data
       await _enableRelatedData(userId);
 
+      // Update local state to remove rejection reason
+      setState(() {
+        // Update in inactive payments
+        _inactivePayments.removeWhere((payment) => payment['userId'] == userId);
+
+        // Add to active payments with cleared rejection reason
+        final paymentIndex =
+            _inactivePayments.indexWhere((p) => p['userId'] == userId);
+        if (paymentIndex != -1) {
+          var updatedPayment =
+              Map<String, dynamic>.from(_inactivePayments[paymentIndex]);
+          updatedPayment['paymentStatus'] = 'approved';
+          updatedPayment['isAccountActive'] = true;
+          updatedPayment.remove('rejectionReason'); // Remove from local data
+          _activePayments.add(updatedPayment);
+        }
+      });
+
       // Send email notification
-      String emailSubject = 'Account Activated';
-      String emailMessage = '''
-Dear $userName,
-
-Your account has been activated by our administrator.
-
-Subscription Details:
-- Plan: $planName
-- Amount: \$${price.toStringAsFixed(2)}
-- Duration: $duration
-- Start Date: ${DateFormat('MMM d, yyyy').format(now)}
-- End Date: ${DateFormat('MMM d, yyyy').format(endDate)}
-
-You can now access all features of our service.
-
-Best regards,
-The Support Team
-''';
-
-      await _sendEmailNotification(userEmail, emailSubject, emailMessage);
-      await _loadAllPayments();
+      ;
+      await _loadAllPayments(); // Refresh all data
       EasyLoading.dismiss();
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -778,21 +671,7 @@ The Support Team
 
       if (result.data['success'] == true) {
         // Send email notification
-        String emailSubject = 'Account Deleted';
-        String emailMessage = '''
-Dear $userName,
 
-Your account and all related data have been permanently deleted from our system.
-
-This action cannot be undone. If you wish to use our services again, you will need to create a new account.
-
-If you have any questions, please contact our support team.
-
-Best regards,
-The Support Team
-''';
-
-        await _sendEmailNotification(userEmail, emailSubject, emailMessage);
         await _loadAllPayments();
         EasyLoading.dismiss();
 
@@ -1222,7 +1101,9 @@ The Support Team
 
             // Show rejection reason for rejected payments
             if (payment['rejectionReason'] != null &&
-                payment['rejectionReason'].toString().isNotEmpty) ...[
+                payment['rejectionReason'].toString().isNotEmpty &&
+                tabType != 'active') ...[
+              // Added this condition
               SizedBox(height: 8),
               Container(
                 padding: EdgeInsets.all(8),
@@ -1248,7 +1129,6 @@ The Support Team
                 ),
               ),
             ],
-
             SizedBox(height: 12),
 
             // Payment proof and actions

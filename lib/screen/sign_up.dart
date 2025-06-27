@@ -485,171 +485,121 @@ class _SignUpState extends State<SignUp> with SingleTickerProviderStateMixin {
   }
 
 // Update the _signUp method in sign_up.dart
-  void _signUp() async {
+// [Previous imports remain the same...]
+
+// Update the renewal section of the _signUp method
+  Future<void> _signUp() async {
     final name = _nameController.text.trim();
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
     final confirmPassword = _confirmPasswordController.text.trim();
 
-    // Basic validations
     if (name.isEmpty ||
         email.isEmpty ||
         password.isEmpty ||
-        _selectedRole == null) {
-      _showSnackBar("Please fill all fields");
-      return;
-    }
-
-    if (password != confirmPassword) {
-      _showSnackBar("Passwords don't match");
+        confirmPassword.isEmpty) {
+      _showSnackBar("Please fill in all required fields.");
       return;
     }
 
     if (!_agreedToTerms) {
-      _showSnackBar("You must agree to terms");
+      _showSnackBar("Please agree to the terms and conditions.");
       return;
     }
 
-    // Owner-specific validations
-    if (_selectedRole == "Owner" && _selectedPlan == null) {
-      _showSnackBar("Please select a plan");
-      return;
-    }
-
-    if (_selectedRole == "Owner" &&
-        _showPaymentOptions &&
-        _paymentSlip == null) {
-      _showSnackBar("Please upload payment slip");
+    if (password != confirmPassword) {
+      _showSnackBar("Passwords do not match.");
       return;
     }
 
     setState(() => _isLoading = true);
 
     try {
-      // Check for existing accounts
+      // Check if user already exists (regardless of status)
       final emailQuery = await _firestore
           .collection('users')
           .where('email', isEqualTo: email)
           .limit(1)
           .get();
 
-      final existingUser =
-          emailQuery.docs.isNotEmpty ? emailQuery.docs.first : null;
-      final isInactiveOwner = existingUser != null &&
-          existingUser['role'] == 'Owner' &&
-          existingUser['isAccountActive'] == false;
+      if (emailQuery.docs.isNotEmpty) {
+        // User exists - check if they're trying to sign up as Owner again
+        final existingUser = emailQuery.docs.first;
 
-      // Block if active account exists
-      if (existingUser != null && !isInactiveOwner) {
-        _showSnackBar("Account already exists with this email");
-        setState(() => _isLoading = false);
-        return;
+        if (_selectedRole == "Owner") {
+          _showSnackBar(
+              "An account with this email already exists. Please use a different email or contact support.");
+          setState(() => _isLoading = false);
+          return;
+        } else {
+          // Allow sign up as User if they're not trying to be Owner again
+          if (existingUser['role'] == "User") {
+            _showSnackBar("An account with this email already exists.");
+            setState(() => _isLoading = false);
+            return;
+          }
+        }
       }
 
-      // Handle renewal of inactive Owner
-      if (isInactiveOwner) {
-        if (_selectedRole != "Owner") {
-          _showSnackBar("Only Owner can renew this account");
+      // New Registration
+      final UserCredential userCredential = await _auth
+          .createUserWithEmailAndPassword(email: email, password: password);
+
+      String? uploadedProof;
+
+      if (_selectedRole == "Owner") {
+        if (_paymentSlip == null) {
+          _showSnackBar("Please upload a payment slip.");
           setState(() => _isLoading = false);
           return;
         }
 
-        final paymentProofUrl =
-            _showPaymentOptions ? await _uploadPaymentSlip() : null;
+        uploadedProof = await _uploadPaymentSlip();
 
-        await _firestore.collection('users').doc(existingUser.id).update({
-          'name': name,
-          'subscription': {
-            'planId': _selectedPlan?.id,
-            'planName': _selectedPlan?.name,
-            'price': _selectedPlan?.price,
-            'duration': _selectedPlan?.duration,
-            'paymentStatus': 'renew_pending',
-            'paymentMethod': 'bankTransfer',
-            'paymentProofUrl': paymentProofUrl,
-            'isRenewal': true,
-          },
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-
-        // Update password if changed
-        if (password.isNotEmpty) {
-          final user = await _auth.signInWithEmailAndPassword(
-            email: existingUser['email'],
-            password: password, // This will fail if password is different
-          );
-          await user.user!.updatePassword(password);
+        if (uploadedProof == null || uploadedProof.isEmpty) {
+          _showSnackBar("Payment proof upload failed.");
+          setState(() => _isLoading = false);
+          return;
         }
-
-        _showWaitingOptionsDialog();
-        return;
       }
 
-      // Handle new signup
-      final userCredential = await _auth.createUserWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
-
-      final userData = {
+      await _firestore.collection('users').doc(userCredential.user!.uid).set({
         'name': name,
         'email': email,
         'role': _selectedRole,
         'createdAt': FieldValue.serverTimestamp(),
-        'isAccountActive': _selectedRole != "Owner", // Owners need approval
-      };
-
-      if (_selectedRole == "Owner") {
-        final paymentProofUrl =
-            _showPaymentOptions ? await _uploadPaymentSlip() : null;
-
-        userData['subscription'] = {
-          'planId': _selectedPlan?.id,
-          'planName': _selectedPlan?.name,
-          'price': _selectedPlan?.price,
-          'duration': _selectedPlan?.duration,
-          'paymentStatus': 'pending',
-          'paymentMethod': 'bankTransfer',
-          'paymentProofUrl': paymentProofUrl,
-          'isRenewal': false,
-        };
-      }
-
-      await _firestore
-          .collection('users')
-          .doc(userCredential.user!.uid)
-          .set(userData);
+        'subscription': _selectedRole == "Owner"
+            ? {
+                'planId': _selectedPlan?.id,
+                'planName': _selectedPlan?.name,
+                'price': _selectedPlan?.price,
+                'duration': _selectedPlan?.duration,
+                'paymentStatus': 'pending',
+                'paymentMethod': 'bankTransfer',
+                'paymentProofUrl': uploadedProof,
+                'isRenewal': false,
+              }
+            : null,
+      });
 
       if (_selectedRole == "Owner") {
         await _sendAdminNotification(name, email);
-        _showWaitingOptionsDialog();
+        _showWaitingDialog();
       } else {
-        _showSnackBar("Account created!");
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(
-            builder: (_) => HomePage(loggedInUserRole: _selectedRole!),
-          ),
+          MaterialPageRoute(builder: (_) => HomePage(loggedInUserRole: "User")),
         );
       }
-    } on FirebaseAuthException catch (e) {
-      if (e.code == 'email-already-in-use') {
-        _showSnackBar("Account already exists with this email");
-      } else {
-        _showSnackBar("Error: ${e.message}");
-      }
-      try {
-        await _auth.currentUser?.delete(); // Clean up if created
-      } catch (_) {}
     } catch (e) {
-      _showSnackBar("Error: ${e.toString()}");
-      try {
-        await _auth.currentUser?.delete(); // Clean up if created
-      } catch (_) {}
+      print("Sign-up error: $e");
+      _showSnackBar("An error occurred. Please try again.");
     } finally {
       setState(() => _isLoading = false);
     }
   }
+
+// [Rest of the file remains the same...]
 
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(

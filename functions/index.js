@@ -1,86 +1,53 @@
 // index.js
 import { onCall, onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
+import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
 import * as logger from "firebase-functions/logger";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
-import nodemailer from "nodemailer";
+import { getAuth } from "firebase-admin/auth";
 import cors from "cors";
 
 // Initialize Firebase services
 initializeApp();
 const db = getFirestore();
+const auth = getAuth();
 const corsHandler = cors({ origin: true });
-
-// Email configuration
-const gmailEmail = process.env.GMAIL_EMAIL;
-const gmailPassword = process.env.GMAIL_PASSWORD;
-// Email transporter setup
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: gmailEmail,
-    pass: gmailPassword
-  },
-  pool: true,
-  maxConnections: 1,
-  rateDelta: 20000,
-  rateLimit: 5
-});
 
 // Helper Functions
 // ================
 
 /**
- * Sends email with HTML formatting
+ * Creates an admin notification
  */
-async function sendEmail(to, subject, text) {
-  const mailOptions = {
-    from: `"Clean Restrooms Admin" <${gmailEmail}>`,
-    to,
-    subject,
-    text,
-    html: `<div style="font-family: Arial, sans-serif; line-height: 1.6; max-width: 600px; margin: 0 auto;">
-      <h2 style="color: #2E86DE;">Clean Restrooms</h2>
-      <div style="background: #f9f9f9; padding: 20px; border-radius: 5px;">
-        ${text.replace(/\n/g, '<br>')}
-      </div>
-      <p style="font-size: 12px; color: #777; margin-top: 20px;">
-        © ${new Date().getFullYear()} Clean Restrooms
-      </p>
-    </div>`
-  };
-
-  try {
-    const info = await transporter.sendMail(mailOptions);
-    logger.log(`Email sent to ${to}`, { messageId: info.messageId });
-
-    // Log successful email
-    await db.collection("emailLogs").add({
-      to,
-      subject,
-      status: "sent",
-      messageId: info.messageId,
-      timestamp: FieldValue.serverTimestamp()
-    });
-
-    return true;
-  } catch (error) {
-    logger.error("Failed to send email", error);
-
-    // Log failed email
-    await db.collection("emailLogs").add({
-      to,
-      subject,
-      status: "failed",
-      error: error.message,
-      timestamp: FieldValue.serverTimestamp()
-    });
-
-    throw error;
-  }
+// In index.js, update the createAdminNotification function
+async function createAdminNotification(message, type, relatedUserId = null, userEmail = null) {
+  const notificationRef = db.collection("notifications").doc();
+  await notificationRef.set({
+    type,
+    message,
+    createdAt: FieldValue.serverTimestamp(),
+    isRead: false,
+    isAdminNotification: true,  // Flag for admin notifications
+    relatedUserId,
+    userEmail
+  });
+  logger.log(`Admin notification created: ${type}`);
 }
 
+// Add a new function for owner notifications
+async function createOwnerNotification(userId, message, type) {
+  const notificationRef = db.collection("notifications").doc();
+  await notificationRef.set({
+    userId,
+    type,
+    message,
+    createdAt: FieldValue.serverTimestamp(),
+    isRead: false,
+    isAdminNotification: false  // Flag for owner notifications
+  });
+  logger.log(`Owner notification created for ${userId}: ${type}`);
+}
 /**
  * Calculates subscription end date based on duration
  */
@@ -109,42 +76,6 @@ function formatDate(date) {
 
 // Core Functions
 // ==============
-
-export const sendEmailNotification = onCall(async (request) => {
-  if (!request.auth) {
-    throw new Error("Unauthenticated");
-  }
-
-  const { email, subject, message, type } = request.data;
-
-  try {
-    const notificationRef = db.collection("notifications").doc();
-    await notificationRef.set({
-      userId: request.auth.uid,
-      type: type || "generic_notification",
-      email,
-      subject,
-      message,
-      createdAt: FieldValue.serverTimestamp(),
-      read: false,
-      emailDelivered: false
-    });
-
-    const emailSent = await sendEmail(email, subject, message);
-    await notificationRef.update({
-      emailDelivered: emailSent,
-      deliveredAt: FieldValue.serverTimestamp()
-    });
-
-    return {
-      success: true,
-      notificationId: notificationRef.id
-    };
-  } catch (error) {
-    logger.error("Failed to send notification", error);
-    throw new Error("Failed to send notification");
-  }
-});
 
 export const approvePayment = onCall(async (request) => {
   if (!request.auth) {
@@ -185,35 +116,23 @@ export const approvePayment = onCall(async (request) => {
       type: "payment_approved",
       message: `Your ${planName} plan payment was approved. Subscription active until ${formatDate(endDate)}.`,
       createdAt: FieldValue.serverTimestamp(),
-      read: false
+      read: false,
+      isAdminNotification: false
     });
 
     await batch.commit();
 
-    const emailSubject = "Payment Approved - Account Activated";
-    const emailMessage = `Dear Owner,
-
-Your payment for the ${planName} plan (LKR ${price}) has been approved.
-
-Account Details:
-- Plan: ${planName}
-- Amount: LKR ${price}
-- Duration: ${duration}
-- Start Date: ${formatDate(now.toDate())}
-- End Date: ${formatDate(endDate)}
-
-You can now log in and access all owner features.
-
-Thank you for choosing Clean Restrooms!
-
-Best regards,
-The Clean Restrooms Team`;
-
-    await sendEmail(userEmail, emailSubject, emailMessage);
+    // Add admin notification
+    await createAdminNotification(
+      `Payment approved for ${planName} (${duration}) by ${request.auth.token.email}`,
+      "payment_approved_admin",
+      userId,
+      userEmail
+    );
 
     return {
       success: true,
-      message: "Payment approved and notification sent",
+      message: "Payment approved",
       notificationId: notificationRef.id
     };
   } catch (error) {
@@ -254,28 +173,23 @@ export const rejectPayment = onCall(async (request) => {
       type: "payment_rejected",
       message: `Your payment was rejected. Reason: ${reason}`,
       createdAt: FieldValue.serverTimestamp(),
-      read: false
+      read: false,
+      isAdminNotification: false
     });
 
     await batch.commit();
 
-    const emailSubject = "Payment Rejected - Action Required";
-    const emailMessage = `Dear Owner,
-
-We regret to inform you that your payment has been rejected.
-
-Reason for rejection: ${reason}
-
-Please review your payment details and resubmit your application, or contact our support team for assistance.
-
-Best regards,
-Clean Restrooms Team`;
-
-    await sendEmail(userEmail, emailSubject, emailMessage);
+    // Add admin notification
+    await createAdminNotification(
+      `Payment rejected for ${userEmail}. Reason: ${reason}`,
+      "payment_rejected_admin",
+      userId,
+      userEmail
+    );
 
     return {
       success: true,
-      message: "Payment rejected and notification sent",
+      message: "Payment rejected",
       notificationId: notificationRef.id
     };
   } catch (error) {
@@ -284,9 +198,37 @@ Clean Restrooms Team`;
   }
 });
 
+export const onRenewalRequest = onDocumentUpdated({
+  document: "users/{userId}",
+  region: "us-central1"
+}, async (event) => {
+  const userData = event.data?.after.data();
+  const previousData = event.data?.before.data();
+
+  // Check if this is a renewal request (status changed to renew_pending)
+  if (userData?.subscription?.paymentStatus === "renew_pending" &&
+      userData?.subscription?.isRenewal === true &&
+      previousData?.subscription?.paymentStatus !== "renew_pending") {
+
+    try {
+      await createAdminNotification(
+        `New renewal request from ${userData.email || 'an owner'}`,
+        "renewal_request",
+        event.params.userId,
+        userData.email
+      );
+
+      logger.log(`Created admin notification for renewal from ${userData.email}`);
+    } catch (error) {
+      logger.error("Failed to create renewal notification", error);
+    }
+  }
+});
+
 export const checkExpiredSubscriptions = onSchedule({
   schedule: "0 0 * * *",
-  timeZone: "UTC"
+  timeZone: "UTC",
+  region: "us-central1"
 }, async () => {
   const now = Timestamp.now();
   logger.log(`Running expired subscription check at ${now.toDate()}`);
@@ -326,24 +268,17 @@ export const checkExpiredSubscriptions = onSchedule({
         type: "subscription_expired",
         message: "Your subscription has expired. Please renew to continue using the service.",
         createdAt: FieldValue.serverTimestamp(),
-        read: false
+        read: false,
+        isAdminNotification: false
       });
 
-      if (userData.email) {
-        const emailSubject = "Your Subscription Has Expired";
-        const emailMessage = `Dear ${userData.name || "User"},
-
-Your Clean Restrooms subscription has expired on ${formatDate(subscription.endDate.toDate())}.
-
-To continue using our services, please renew your subscription from your account dashboard.
-
-If you have any questions, please contact our support team.
-
-Best regards,
-Clean Restrooms Team`;
-
-        await sendEmail(userData.email, emailSubject, emailMessage);
-      }
+      // Add admin notification
+      await createAdminNotification(
+        `Subscription expired for ${userData.email} (${subscription.planName})`,
+        "subscription_expired_admin",
+        doc.id,
+        userData.email
+      );
 
       expiredCount++;
     }
@@ -359,7 +294,8 @@ Clean Restrooms Team`;
 
 export const sendSubscriptionExpirationNotices = onSchedule({
   schedule: "0 9 * * *",
-  timeZone: "UTC"
+  timeZone: "UTC",
+  region: "us-central1"
 }, async () => {
   const now = Timestamp.now();
   const sevenDaysFromNow = new Date(now.toDate());
@@ -388,27 +324,9 @@ export const sendSubscriptionExpirationNotices = onSchedule({
           type: "subscription_expiring_soon",
           message: `Your subscription will expire in 7 days on ${formatDate(endDate)}.`,
           createdAt: FieldValue.serverTimestamp(),
-          read: false
+          read: false,
+          isAdminNotification: false
         });
-
-        if (userData.email) {
-          const emailSubject = "Your Subscription Will Expire Soon";
-          const emailMessage = `Dear ${userData.name || "User"},
-
-Your Clean Restrooms subscription will expire in 7 days on ${formatDate(endDate)}.
-
-To avoid service interruption, please renew your subscription before the expiration date.
-
-Current Plan: ${subscription.planName || "Unknown Plan"}
-Expiration Date: ${formatDate(endDate)}
-
-You can renew your subscription from your account dashboard.
-
-Best regards,
-Clean Restrooms Team`;
-
-          await sendEmail(userData.email, emailSubject, emailMessage);
-        }
 
         notificationsSent++;
       }
@@ -567,7 +485,8 @@ export const getSubscriptionAnalytics = onCall(async (request) => {
 });
 
 export const updateUnreadNotificationCount = onSchedule({
-  schedule: "every 5 minutes"
+  schedule: "every 5 minutes",
+  region: "us-central1"
 }, async () => {
   const snapshot = await db.collection("notifications")
     .where("read", "==", false)
@@ -577,7 +496,9 @@ export const updateUnreadNotificationCount = onSchedule({
 
   for (const doc of snapshot.docs) {
     const userId = doc.data().userId;
-    userCounts[userId] = (userCounts[userId] || 0) + 1;
+    if (userId) {
+      userCounts[userId] = (userCounts[userId] || 0) + 1;
+    }
   }
 
   const batch = db.batch();
@@ -586,8 +507,10 @@ export const updateUnreadNotificationCount = onSchedule({
     batch.update(userRef, { unreadNotifications: count });
   }
 
-  await batch.commit();
-  logger.log(`Updated unread counts for ${Object.keys(userCounts).length} users`);
+  if (Object.keys(userCounts).length > 0) {
+    await batch.commit();
+    logger.log(`Updated unread counts for ${Object.keys(userCounts).length} users`);
+  }
 });
 
 export const deletePaymentVerification = onCall(async (request) => {
@@ -624,56 +547,17 @@ export const deletePaymentVerification = onCall(async (request) => {
       type: "payment_verification_deleted",
       message: "Your payment verification has been deleted by admin.",
       createdAt: FieldValue.serverTimestamp(),
-      read: false
+      read: false,
+      isAdminNotification: false
     });
 
     await batch.commit();
-
-    if (userData.email) {
-      const emailSubject = "Payment Verification Deleted";
-      const emailMessage = `Dear ${userData.name || "User"},
-
-Your payment verification has been deleted by an administrator.
-
-If you wish to continue using our services, please submit a new payment through your account dashboard.
-
-For any questions, please contact our support team.
-
-Best regards,
-Clean Restrooms Team`;
-
-      await sendEmail(userData.email, emailSubject, emailMessage);
-    }
 
     return { success: true };
   } catch (error) {
     logger.error("Failed to delete verification", error);
     throw new Error("Failed to delete verification");
   }
-});
-// ... (keep all your existing imports and other functions above)
-
-export const testEmail = onRequest(async (req, res) => {
-  corsHandler(req, res, async () => {
-    try {
-      const { email } = req.query;
-
-      if (!email) {
-        return res.status(400).send("Email parameter is required");
-      }
-
-      await sendEmail(
-        email,
-        "Test Email from Clean Restrooms",
-        "This is a test email from the Clean Restrooms backend system."
-      );
-
-      return res.status(200).send(`Test email sent to ${email}`);
-    } catch (error) {
-      logger.error("Test email failed", error);
-      return res.status(500).send("Error sending test email");
-    }
-  });
 });
 
 export const deleteUserAccount = onCall(async (request) => {
@@ -695,7 +579,7 @@ export const deleteUserAccount = onCall(async (request) => {
 
   try {
     // Delete from Firebase Authentication
-    await admin.auth().deleteUser(userId);
+    await auth.deleteUser(userId);
 
     // Delete from Firestore
     const batch = db.batch();

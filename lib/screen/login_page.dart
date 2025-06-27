@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:ui';
 import 'home_page.dart';
 import 'sign_up.dart';
@@ -22,7 +23,6 @@ class _LoginScreenState extends State<LoginScreen>
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
-  bool _isLoading = false;
   bool _obscurePassword = true;
   String? _loginError;
   late AnimationController _animationController;
@@ -58,67 +58,24 @@ class _LoginScreenState extends State<LoginScreen>
     super.dispose();
   }
 
-// Update the _verifyAccountStatus method in login_page.dart
+// In the _verifyAccountStatus method, modify it to return true for all cases but store the account status
   Future<bool> _verifyAccountStatus(UserCredential userCredential) async {
     if (userCredential.user != null) {
       String userId = userCredential.user!.uid;
-
       DocumentSnapshot userDoc =
           await _firestore.collection('users').doc(userId).get();
 
       if (userDoc.exists) {
         Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
+        bool isActive = userData['isAccountActive'] ?? false;
         String paymentStatus = userData['subscription']?['paymentStatus'] ?? '';
 
-        // Block login for inactive accounts (paymentStatus 'expired' or 'rejected')
-        if (paymentStatus == 'expired' || paymentStatus == 'rejected') {
-          await _auth.signOut();
-          setState(() {
-            _loginError =
-                "Your account is inactive. Please renew your subscription.";
-          });
-          return false;
-        }
+        // Store account status in shared preferences for later use
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('isAccountActive', isActive);
+        await prefs.setString('paymentStatus', paymentStatus);
 
-        // Rest of your existing verification logic...
-        if (userData['role'] == 'Owner') {
-          bool isActive = userData['isAccountActive'] ?? false;
-
-          if (!isActive) {
-            await _auth.signOut();
-            setState(() {
-              _loginError =
-                  "Your account is not active. Please contact support.";
-            });
-            return false;
-          }
-
-          if (userData.containsKey('subscription') &&
-              userData['subscription'] is Map<String, dynamic>) {
-            Map<String, dynamic> subscription =
-                userData['subscription'] as Map<String, dynamic>;
-
-            if (subscription.containsKey('endDate') &&
-                subscription['endDate'] != null) {
-              Timestamp endTimestamp = subscription['endDate'];
-              DateTime endDate = endTimestamp.toDate();
-
-              if (DateTime.now().isAfter(endDate)) {
-                await _firestore.collection('users').doc(userId).update({
-                  'isAccountActive': false,
-                  'subscription.paymentStatus': 'expired'
-                });
-
-                await _auth.signOut();
-                setState(() {
-                  _loginError =
-                      "Your subscription has expired. Please renew to continue.";
-                });
-                return false;
-              }
-            }
-          }
-        }
+        // Allow login regardless of status
         return true;
       }
     }
@@ -245,11 +202,6 @@ class _LoginScreenState extends State<LoginScreen>
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-      _loginError = null;
-    });
-
     try {
       EasyLoading.show(status: 'Signing in...');
 
@@ -260,8 +212,6 @@ class _LoginScreenState extends State<LoginScreen>
       );
 
       bool isAccountValid = await _verifyAccountStatus(userCredential);
-
-      EasyLoading.dismiss();
 
       if (isAccountValid) {
         final uid = userCredential.user?.uid;
@@ -274,42 +224,44 @@ class _LoginScreenState extends State<LoginScreen>
           if (userDoc.exists) {
             final userData = userDoc.data();
             final role = userData?['role'] ?? 'user';
+            bool isAccountActive = userData?['isAccountActive'] ?? false;
+            String paymentStatus =
+                userData?['subscription']?['paymentStatus'] ?? 'pending';
+
+            EasyLoading.dismiss();
 
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(
-                builder: (_) => HomePage(loggedInUserRole: role),
+                builder: (_) => HomePage(
+                  loggedInUserRole: role,
+                  isAccountActive: isAccountActive,
+                  paymentStatus: paymentStatus,
+                ),
               ),
             );
-          } else {
-            setState(() {
-              _isLoading = false;
-              _loginError = "User data not found.";
-            });
           }
         }
-      } else {
-        setState(() {
-          _isLoading = false;
-        });
       }
     } on FirebaseAuthException catch (e) {
       EasyLoading.dismiss();
-      String message = "An error occurred. Please try again.";
+      String errorMessage = "An error occurred. Please try again.";
+
       if (e.code == 'user-not-found') {
-        message = "No user found for this email.";
+        errorMessage = "No user found with this email.";
       } else if (e.code == 'wrong-password') {
-        message = "Incorrect password.";
+        errorMessage = "Incorrect password. Please try again.";
+      } else if (e.code == 'too-many-requests') {
+        errorMessage = "Too many attempts. Try again later.";
       }
+
       setState(() {
-        _isLoading = false;
-        _loginError = message;
+        _loginError = errorMessage;
       });
     } catch (e) {
       EasyLoading.dismiss();
       setState(() {
-        _isLoading = false;
-        _loginError = "An unexpected error occurred. Please try again.";
+        _loginError = "An unexpected error occurred.";
       });
     }
   }
@@ -568,7 +520,7 @@ class _LoginScreenState extends State<LoginScreen>
                                     width: double.infinity,
                                     height: 56,
                                     child: ElevatedButton(
-                                      onPressed: _isLoading ? null : _login,
+                                      onPressed: _login,
                                       style: ElevatedButton.styleFrom(
                                         backgroundColor: Color(0xFF2E86DE),
                                         foregroundColor: Colors.white,
@@ -582,23 +534,14 @@ class _LoginScreenState extends State<LoginScreen>
                                         disabledBackgroundColor:
                                             Color(0xFF2E86DE).withOpacity(0.6),
                                       ),
-                                      child: _isLoading
-                                          ? SizedBox(
-                                              height: 24,
-                                              width: 24,
-                                              child: CircularProgressIndicator(
-                                                color: Colors.white,
-                                                strokeWidth: 2.5,
-                                              ),
-                                            )
-                                          : Text(
-                                              "Sign In",
-                                              style: TextStyle(
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.bold,
-                                                letterSpacing: 0.5,
-                                              ),
-                                            ),
+                                      child: Text(
+                                        "Sign In",
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                          letterSpacing: 0.5,
+                                        ),
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -726,6 +669,14 @@ class _LoginScreenState extends State<LoginScreen>
         obscureText: obscureText ?? false,
         keyboardType: keyboardType,
         style: TextStyle(fontSize: 16),
+        onChanged: (value) {
+          // Clear error when typing
+          if (_loginError != null) {
+            setState(() {
+              _loginError = null;
+            });
+          }
+        },
         decoration: InputDecoration(
           labelText: label,
           labelStyle: TextStyle(

@@ -21,8 +21,15 @@ import 'filter_page.dart';
 
 class HomePage extends StatefulWidget {
   final String loggedInUserRole;
+  final bool isAccountActive; // Add this new parameter
+  final String? paymentStatus; // Add this
 
-  const HomePage({Key? key, required this.loggedInUserRole}) : super(key: key);
+  const HomePage({
+    Key? key,
+    required this.loggedInUserRole,
+    this.isAccountActive = true,
+    this.paymentStatus, // Add this
+  }) : super(key: key);
 
   @override
   _HomePageState createState() => _HomePageState();
@@ -1600,15 +1607,39 @@ class _HomePageState extends State<HomePage> {
         _selectedIndex = 0;
       });
     } else if (index == 3) {
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => ProfilePage(role: widget.loggedInUserRole),
-        ),
-      );
-      setState(() {
-        _selectedIndex = 0;
-      });
+      // Simplified profile navigation that works for all roles
+      final currentUser = FirebaseAuth.instance.currentUser;
+      if (currentUser != null) {
+        // Get the current user's account status from Firestore
+        bool isAccountActive = true; // default to true
+        try {
+          final userDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(currentUser.uid)
+              .get();
+
+          if (userDoc.exists) {
+            isAccountActive = userDoc['isAccountActive'] ?? true;
+          }
+        } catch (e) {
+          debugPrint('Error fetching user status: $e');
+        }
+
+// In the _onItemTapped method for profile navigation
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ProfilePage(
+              role: widget.loggedInUserRole,
+              isAccountActive: isAccountActive,
+              paymentStatus: widget.paymentStatus, // Pass payment status
+            ),
+          ),
+        );
+        setState(() {
+          _selectedIndex = 0;
+        });
+      }
     }
   }
 
