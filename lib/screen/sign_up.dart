@@ -160,6 +160,33 @@ class _SignUpState extends State<SignUp> with SingleTickerProviderStateMixin {
     }
   }
 
+// Add this method to _SignUpState class in sign_up.dart
+  Future<void> _sendAdminNotification(String userName, String userEmail) async {
+    try {
+      // Get all admin users
+      final admins = await _firestore
+          .collection('users')
+          .where('role', isEqualTo: 'Admin')
+          .get();
+
+      // Create a notification for each admin
+      for (var admin in admins.docs) {
+        await _firestore.collection('notifications').add({
+          'userId': admin.id,
+          'title': 'New Owner Registration',
+          'message':
+              '$userName ($userEmail) has registered as an Owner and needs payment verification.',
+          'type': 'new_owner',
+          'isRead': false,
+          'createdAt': FieldValue.serverTimestamp(),
+          'relatedUserId': _auth.currentUser?.uid,
+        });
+      }
+    } catch (e) {
+      print('Error sending admin notification: $e');
+    }
+  }
+
   // Show waiting dialog after successful owner signup
   void _showWaitingDialog() {
     showDialog(
@@ -457,18 +484,26 @@ class _SignUpState extends State<SignUp> with SingleTickerProviderStateMixin {
     );
   }
 
-  void _signUp() async {
+// Update the _signUp method in sign_up.dart
+// [Previous imports remain the same...]
+
+// Update the renewal section of the _signUp method
+  Future<void> _signUp() async {
     final name = _nameController.text.trim();
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
     final confirmPassword = _confirmPasswordController.text.trim();
 
-    // Basic validations
-    if (email.isEmpty ||
+    if (name.isEmpty ||
+        email.isEmpty ||
         password.isEmpty ||
-        name.isEmpty ||
-        _selectedRole == null) {
-      _showSnackBar("Please fill all fields.");
+        confirmPassword.isEmpty) {
+      _showSnackBar("Please fill in all required fields.");
+      return;
+    }
+
+    if (!_agreedToTerms) {
+      _showSnackBar("Please agree to the terms and conditions.");
       return;
     }
 
@@ -477,103 +512,94 @@ class _SignUpState extends State<SignUp> with SingleTickerProviderStateMixin {
       return;
     }
 
-    if (!_agreedToTerms) {
-      _showSnackBar("You must agree to the terms and conditions.");
-      return;
-    }
-
-    // Check if owner has selected a plan
-    if (_selectedRole == "Owner" && _selectedPlan == null) {
-      _showSnackBar("Please select a subscription plan.");
-      return;
-    }
-
-    // If role is Owner, check for payment slip
-    if (_selectedRole == "Owner" &&
-        _showPaymentOptions &&
-        _paymentSlip == null) {
-      _showSnackBar("Please upload your payment receipt.");
-      return;
-    }
-
-    setState(() {
-      _isLoading = true;
-    });
+    setState(() => _isLoading = true);
 
     try {
-      // Create user with Firebase Authentication
+      // Check if user already exists (regardless of status)
+      final emailQuery = await _firestore
+          .collection('users')
+          .where('email', isEqualTo: email)
+          .limit(1)
+          .get();
+
+      if (emailQuery.docs.isNotEmpty) {
+        // User exists - check if they're trying to sign up as Owner again
+        final existingUser = emailQuery.docs.first;
+
+        if (_selectedRole == "Owner") {
+          _showSnackBar(
+              "An account with this email already exists. Please use a different email or contact support.");
+          setState(() => _isLoading = false);
+          return;
+        } else {
+          // Allow sign up as User if they're not trying to be Owner again
+          if (existingUser['role'] == "User") {
+            _showSnackBar("An account with this email already exists.");
+            setState(() => _isLoading = false);
+            return;
+          }
+        }
+      }
+
+      // New Registration
       final UserCredential userCredential = await _auth
           .createUserWithEmailAndPassword(email: email, password: password);
 
-      final userId = userCredential.user?.uid;
+      String? uploadedProof;
 
-      if (userId != null) {
-        // For Owner role with subscription
-        if (_selectedRole == "Owner") {
-          String? paymentProofUrl;
+      if (_selectedRole == "Owner") {
+        if (_paymentSlip == null) {
+          _showSnackBar("Please upload a payment slip.");
+          setState(() => _isLoading = false);
+          return;
+        }
 
-          // Upload payment slip
-          if (_showPaymentOptions) {
-            paymentProofUrl = await _uploadPaymentSlip();
-          }
+        uploadedProof = await _uploadPaymentSlip();
 
-          // Save user details with subscription info to Firestore
-          await _firestore.collection('users').doc(userId).set({
-            'name': name,
-            'email': email,
-            'role': _selectedRole,
-            'createdAt': FieldValue.serverTimestamp(),
-            'subscription': {
-              'planId': _selectedPlan?.id,
-              'planName': _selectedPlan?.name,
-              'price': _selectedPlan?.price,
-              'duration': _selectedPlan?.duration,
-              'paymentStatus': 'pending',
-              'paymentMethod': 'bankTransfer',
-              'paymentProofUrl': paymentProofUrl,
-              'startDate': null, // Will be set when payment is verified
-              'endDate': null, // Will be set when payment is verified
-            },
-            'isAccountActive': false, // Needs payment verification
-          });
-
-          setState(() {
-            _isLoading = false;
-          });
-
-          // Only show one dialog to fix the issue with multiple dialogs
-          _showWaitingOptionsDialog();
-        } else {
-          // For regular User role
-          await _firestore.collection('users').doc(userId).set({
-            'name': name,
-            'email': email,
-            'role': _selectedRole,
-            'createdAt': FieldValue.serverTimestamp(),
-            'isAccountActive': true,
-          });
-
-          setState(() {
-            _isLoading = false;
-          });
-
-          _showSnackBar("Account created successfully!");
-          // Navigate to HomePage
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => HomePage(loggedInUserRole: _selectedRole!),
-            ),
-          );
+        if (uploadedProof == null || uploadedProof.isEmpty) {
+          _showSnackBar("Payment proof upload failed.");
+          setState(() => _isLoading = false);
+          return;
         }
       }
-    } catch (e) {
-      setState(() {
-        _isLoading = false;
+
+      await _firestore.collection('users').doc(userCredential.user!.uid).set({
+        'name': name,
+        'email': email,
+        'role': _selectedRole,
+        'createdAt': FieldValue.serverTimestamp(),
+        'subscription': _selectedRole == "Owner"
+            ? {
+                'planId': _selectedPlan?.id,
+                'planName': _selectedPlan?.name,
+                'price': _selectedPlan?.price,
+                'duration': _selectedPlan?.duration,
+                'paymentStatus': 'pending',
+                'paymentMethod': 'bankTransfer',
+                'paymentProofUrl': uploadedProof,
+                'isRenewal': false,
+              }
+            : null,
       });
-      _showSnackBar("Error: ${e.toString()}");
+
+      if (_selectedRole == "Owner") {
+        await _sendAdminNotification(name, email);
+        _showWaitingDialog();
+      } else {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => HomePage(loggedInUserRole: "User")),
+        );
+      }
+    } catch (e) {
+      print("Sign-up error: $e");
+      _showSnackBar("An error occurred. Please try again.");
+    } finally {
+      setState(() => _isLoading = false);
     }
   }
+
+// [Rest of the file remains the same...]
 
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
