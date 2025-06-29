@@ -50,6 +50,71 @@ class ToiletFacility {
 
 enum ToiletStatus { operational, outOfService }
 
+class MaintenanceRecord {
+  final String id;
+  final String toiletId;
+  final String toiletName;
+  final String? maintainerId;
+  final String? maintainerEmail;
+  final String status;
+  final List<ToiletFacility> facilities;
+  final Map<String, bool> features;
+  final bool is24Hours;
+  final TimeOfDay openingTime;
+  final TimeOfDay closingTime;
+  final List<bool> operatingDays;
+  final List<String> imageUrls;
+  final DateTime timestamp;
+
+  MaintenanceRecord({
+    required this.id,
+    required this.toiletId,
+    required this.toiletName,
+    this.maintainerId,
+    this.maintainerEmail,
+    required this.status,
+    required this.facilities,
+    required this.features,
+    required this.is24Hours,
+    required this.openingTime,
+    required this.closingTime,
+    required this.operatingDays,
+    required this.imageUrls,
+    required this.timestamp,
+  });
+
+  factory MaintenanceRecord.fromFirestore(DocumentSnapshot doc) {
+    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+
+    TimeOfDay parseTimeOfDay(String timeString) {
+      final parts = timeString.split(':');
+      return TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1]));
+    }
+
+    return MaintenanceRecord(
+      id: doc.id,
+      toiletId: data['toiletId'],
+      toiletName: data['toiletName'],
+      maintainerId: data['maintainerId'],
+      maintainerEmail: data['maintainerEmail'],
+      status: data['status'],
+      facilities: (data['facilities'] as List)
+          .map((f) => ToiletFacility.fromJson(f))
+          .toList(),
+      features: Map<String, bool>.from(data['features'] ?? {}),
+      is24Hours: data['operatingHours']['is24Hours'] ?? false,
+      openingTime:
+          parseTimeOfDay(data['operatingHours']['openingTime'] ?? '6:00'),
+      closingTime:
+          parseTimeOfDay(data['operatingHours']['closingTime'] ?? '22:00'),
+      operatingDays: List<bool>.from(
+          data['operatingHours']['operatingDays'] ?? List.filled(7, true)),
+      imageUrls: List<String>.from(data['imageUrls'] ?? []),
+      timestamp: (data['timestamp'] as Timestamp).toDate(),
+    );
+  }
+}
+
 class PublicToilet {
   final String id;
   final String name;
@@ -97,7 +162,6 @@ class PublicToilet {
               'Showers': false,
               'Paid Entry': false,
               'Gender Neutral': false,
-              'Family Room': false,
             };
 
   Map<String, dynamic> toJson() {
@@ -172,7 +236,6 @@ class PublicToilet {
               'Showers': false,
               'Paid Entry': false,
               'Gender Neutral': false,
-              'Family Room': false,
             },
     );
   }
@@ -201,6 +264,24 @@ class MaintainerToiletService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   static const String _cachedToiletsKey = 'maintainer_assigned_toilets';
+
+  Future<MaintenanceRecord?> getMaintenanceRecord(String toiletId) async {
+    try {
+      final querySnapshot = await _firestore
+          .collection('maintenanceRecords')
+          .where('toiletId', isEqualTo: toiletId)
+          .limit(1)
+          .get();
+
+      if (querySnapshot.docs.isNotEmpty) {
+        return MaintenanceRecord.fromFirestore(querySnapshot.docs.first);
+      }
+      return null;
+    } catch (e) {
+      print('Error getting maintenance record: $e');
+      return null;
+    }
+  }
 
   Future<List<PublicToilet>> getAssignedToilets() async {
     try {
@@ -292,6 +373,7 @@ class MaintainerToiletService {
           ? 'Operational'
           : 'Out of Service';
 
+      // First update the toilet document
       await _firestore.collection('toilets').doc(toilet.id).update({
         'maintenanceStatus': statusString,
         'lastMaintenanceDate': toilet.lastMaintenanceDate.toIso8601String(),
@@ -308,14 +390,44 @@ class MaintainerToiletService {
         'updatedAt': FieldValue.serverTimestamp(),
       });
 
-      await _firestore.collection('maintenanceRecords').add({
+      // Check if a maintenance record already exists for this toilet
+      final querySnapshot = await _firestore
+          .collection('maintenanceRecords')
+          .where('toiletId', isEqualTo: toilet.id)
+          .limit(1)
+          .get();
+
+      final maintenanceData = {
         'toiletId': toilet.id,
         'toiletName': toilet.name,
         'maintainerId': _auth.currentUser?.uid,
         'maintainerEmail': _auth.currentUser?.email,
         'status': statusString,
+        'facilities': toilet.facilities.map((f) => f.toJson()).toList(),
+        'features': toilet.features,
+        'operatingHours': {
+          'is24Hours': toilet.is24Hours,
+          'openingTime':
+              '${toilet.openingTime.hour}:${toilet.openingTime.minute}',
+          'closingTime':
+              '${toilet.closingTime.hour}:${toilet.closingTime.minute}',
+          'operatingDays': toilet.operatingDays,
+        },
+        'imageUrls': toilet.imageUrls,
+        'lastUpdated': FieldValue.serverTimestamp(),
         'timestamp': FieldValue.serverTimestamp(),
-      });
+      };
+
+      if (querySnapshot.docs.isNotEmpty) {
+        // Update existing record
+        await _firestore
+            .collection('maintenanceRecords')
+            .doc(querySnapshot.docs.first.id)
+            .update(maintenanceData);
+      } else {
+        // Create new record
+        await _firestore.collection('maintenanceRecords').add(maintenanceData);
+      }
 
       return true;
     } catch (e) {
@@ -1350,9 +1462,6 @@ class _UpdateMaintenanceStatusPageState
         break;
       case 'Gender Neutral':
         featureIcon = Icons.wc;
-        break;
-      case 'Family Room':
-        featureIcon = Icons.family_restroom;
         break;
       default:
         featureIcon = Icons.check_box;
