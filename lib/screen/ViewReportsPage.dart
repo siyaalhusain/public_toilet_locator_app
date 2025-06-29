@@ -8,7 +8,7 @@ class ViewReportsPage extends StatefulWidget {
   @override
   _ViewReportsPageState createState() => _ViewReportsPageState();
 }
-
+//
 class _ViewReportsPageState extends State<ViewReportsPage> {
   final CollectionReference reportsCollection =
       FirebaseFirestore.instance.collection('toilet_reports');
