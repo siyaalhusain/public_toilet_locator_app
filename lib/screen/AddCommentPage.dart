@@ -9,6 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import 'dart:math' as math;
 import 'package:geocoding/geocoding.dart';
 import 'MapSelectionPage.dart';
+import 'admin_notifications_page.dart';
 
 class LatLng {
   final double latitude;
@@ -29,6 +30,7 @@ class AddCommentPage extends StatefulWidget {
 
 class _AddCommentPageState extends State<AddCommentPage> {
   final TextEditingController _commentController = TextEditingController();
+  final currentUser = FirebaseAuth.instance.currentUser;
   File? _selectedImage;
   final ImagePicker _picker = ImagePicker();
   String? _selectedToiletId;
@@ -356,11 +358,17 @@ class _AddCommentPageState extends State<AddCommentPage> {
               _categoryRatings.length);
       _rating = (calculatedRating * 2).round() / 2;
 
+      // Ensure user details are included in the review
+      String userId = user?.uid ?? "anonymous";
+      String userName = user?.displayName ?? "Unknown User";
+      String userPhotoUrl = user?.photoURL ?? "";
+
       await FirebaseFirestore.instance.collection('washroom_reviews').add({
         'toilet_id': _selectedToiletId,
         'toilet_name': _selectedToiletName,
-        'user_id': user?.uid ?? "anonymous",
-        'user_name': user?.displayName ?? "Unknown User",
+        'user_id': userId,
+        'user_name': userName, // Include user's name
+        'user_photo_url': userPhotoUrl, // Include user's photo URL if available
         'comment': commentText,
         'image_url': imageUrl,
         'rating': _rating,
@@ -371,7 +379,6 @@ class _AddCommentPageState extends State<AddCommentPage> {
           _userLocation?.latitude ?? 0,
           _userLocation?.longitude ?? 0,
         ),
-        'user_photo_url': user?.photoURL,
       });
 
       await _updateToiletRating();

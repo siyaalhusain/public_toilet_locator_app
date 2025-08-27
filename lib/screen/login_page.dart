@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:ui';
 import 'home_page.dart';
 import 'sign_up.dart';
@@ -22,7 +23,6 @@ class _LoginScreenState extends State<LoginScreen>
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
-  bool _isLoading = false;
   bool _obscurePassword = true;
   String? _loginError;
   late AnimationController _animationController;
@@ -45,7 +45,6 @@ class _LoginScreenState extends State<LoginScreen>
 
     _animationController.forward();
 
-    // Set error message if provided
     if (widget.errorMessage != null) {
       _loginError = widget.errorMessage;
     }
@@ -59,87 +58,27 @@ class _LoginScreenState extends State<LoginScreen>
     super.dispose();
   }
 
+// In the _verifyAccountStatus method, modify it to return true for all cases but store the account status
   Future<bool> _verifyAccountStatus(UserCredential userCredential) async {
-    // Check if user exists
     if (userCredential.user != null) {
       String userId = userCredential.user!.uid;
-
-      // Fetch user data from Firestore
       DocumentSnapshot userDoc =
           await _firestore.collection('users').doc(userId).get();
 
       if (userDoc.exists) {
         Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
+        bool isActive = userData['isAccountActive'] ?? false;
+        String paymentStatus = userData['subscription']?['paymentStatus'] ?? '';
 
-        // Check if user is an Owner and verify account status
-        if (userData['role'] == 'Owner') {
-          // Check if account is active
-          bool isActive = userData['isAccountActive'] ?? false;
-          String paymentStatus = '';
+        // Store account status in shared preferences for later use
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('isAccountActive', isActive);
+        await prefs.setString('paymentStatus', paymentStatus);
 
-          if (userData.containsKey('subscription') &&
-              userData['subscription'] is Map<String, dynamic>) {
-            Map<String, dynamic> subscription =
-                userData['subscription'] as Map<String, dynamic>;
-            paymentStatus = subscription['paymentStatus'] ?? '';
-          }
-
-          // If account is inactive or payment was rejected, prevent login
-          if (!isActive || paymentStatus == 'rejected') {
-            // Sign out the user since we don't want them to proceed
-            await _auth.signOut();
-
-            setState(() {
-              if (paymentStatus == 'rejected') {
-                _loginError =
-                    "Your payment was rejected. Please contact admin for assistance.";
-              } else if (paymentStatus == 'pending') {
-                _loginError =
-                    "Your account is awaiting payment verification. Please wait for approval.";
-              } else {
-                _loginError =
-                    "Your account is not active. Please contact support.";
-              }
-            });
-            return false;
-          }
-
-          // Check if subscription has expired
-          if (userData.containsKey('subscription') &&
-              userData['subscription'] is Map<String, dynamic>) {
-            Map<String, dynamic> subscription =
-                userData['subscription'] as Map<String, dynamic>;
-
-            if (subscription.containsKey('endDate') &&
-                subscription['endDate'] != null) {
-              Timestamp endTimestamp = subscription['endDate'];
-              DateTime endDate = endTimestamp.toDate();
-
-              if (DateTime.now().isAfter(endDate)) {
-                // Subscription has expired
-                await _firestore.collection('users').doc(userId).update({
-                  'isAccountActive': false,
-                  'subscription.status': 'expired'
-                });
-
-                // Sign out the user
-                await _auth.signOut();
-
-                setState(() {
-                  _loginError =
-                      "Your subscription has expired. Please renew to continue.";
-                });
-                return false;
-              }
-            }
-          }
-        }
-
-        // For all other users, or approved owners, allow login
+        // Allow login regardless of status
         return true;
       }
     }
-
     return false;
   }
 
@@ -156,7 +95,6 @@ class _LoginScreenState extends State<LoginScreen>
       await _auth.sendPasswordResetEmail(email: email);
       EasyLoading.dismiss();
 
-      // Show success dialog
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
@@ -189,12 +127,11 @@ class _LoginScreenState extends State<LoginScreen>
   }
 
   final GoogleSignIn _googleSignIn = GoogleSignIn();
-// Add this method to your _LoginScreenState class
+
   Future<void> _signInWithGoogle() async {
     try {
       EasyLoading.show(status: 'Signing in with Google...');
 
-      // Force account selection every time
       await _googleSignIn.signOut();
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
 
@@ -219,25 +156,22 @@ class _LoginScreenState extends State<LoginScreen>
       final String userId = userCredential.user?.uid ?? '';
 
       if (isNewUser) {
-        // New user - set default role to 'user'
         await _firestore.collection('users').doc(userId).set({
           'email': userCredential.user?.email,
           'name': userCredential.user?.displayName,
-          'role': 'user', // Default role for new users
+          'role': 'user',
           'isAccountActive': true,
           'createdAt': FieldValue.serverTimestamp(),
           'authProvider': 'google',
         });
       }
 
-      // Get user document to determine role
       final userDoc = await _firestore.collection('users').doc(userId).get();
       final String role = userDoc.exists
           ? (userDoc.data()?['role'] as String?) ?? 'user'
           : 'user';
       EasyLoading.dismiss();
 
-      // Navigate to HomePage with the determined role
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
@@ -268,11 +202,6 @@ class _LoginScreenState extends State<LoginScreen>
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-      _loginError = null;
-    });
-
     try {
       EasyLoading.show(status: 'Signing in...');
 
@@ -282,10 +211,7 @@ class _LoginScreenState extends State<LoginScreen>
         password: password,
       );
 
-      // Verify account status
       bool isAccountValid = await _verifyAccountStatus(userCredential);
-
-      EasyLoading.dismiss();
 
       if (isAccountValid) {
         final uid = userCredential.user?.uid;
@@ -298,44 +224,44 @@ class _LoginScreenState extends State<LoginScreen>
           if (userDoc.exists) {
             final userData = userDoc.data();
             final role = userData?['role'] ?? 'user';
+            bool isAccountActive = userData?['isAccountActive'] ?? false;
+            String paymentStatus =
+                userData?['subscription']?['paymentStatus'] ?? 'pending';
 
-            // Navigate to HomePage with role
+            EasyLoading.dismiss();
+
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(
-                builder: (_) => HomePage(loggedInUserRole: role),
+                builder: (_) => HomePage(
+                  loggedInUserRole: role,
+                  isAccountActive: isAccountActive,
+                  paymentStatus: paymentStatus,
+                ),
               ),
             );
-          } else {
-            setState(() {
-              _isLoading = false;
-              _loginError = "User data not found.";
-            });
           }
         }
-      } else {
-        // _loginError is set in _verifyAccountStatus method
-        setState(() {
-          _isLoading = false;
-        });
       }
     } on FirebaseAuthException catch (e) {
       EasyLoading.dismiss();
-      String message = "An error occurred. Please try again.";
+      String errorMessage = "An error occurred. Please try again.";
+
       if (e.code == 'user-not-found') {
-        message = "No user found for this email.";
+        errorMessage = "No user found with this email.";
       } else if (e.code == 'wrong-password') {
-        message = "Incorrect password.";
+        errorMessage = "Incorrect password. Please try again.";
+      } else if (e.code == 'too-many-requests') {
+        errorMessage = "Too many attempts. Try again later.";
       }
+
       setState(() {
-        _isLoading = false;
-        _loginError = message;
+        _loginError = errorMessage;
       });
     } catch (e) {
       EasyLoading.dismiss();
       setState(() {
-        _isLoading = false;
-        _loginError = "An unexpected error occurred. Please try again.";
+        _loginError = "An unexpected error occurred.";
       });
     }
   }
@@ -443,8 +369,6 @@ class _LoginScreenState extends State<LoginScreen>
                               ),
                             ),
                             const SizedBox(height: 40),
-
-                            // Login error message
                             if (_loginError != null) ...[
                               Container(
                                 padding: EdgeInsets.all(16),
@@ -473,7 +397,6 @@ class _LoginScreenState extends State<LoginScreen>
                               ),
                               const SizedBox(height: 20),
                             ],
-
                             Container(
                               padding: EdgeInsets.all(24),
                               decoration: BoxDecoration(
@@ -597,7 +520,7 @@ class _LoginScreenState extends State<LoginScreen>
                                     width: double.infinity,
                                     height: 56,
                                     child: ElevatedButton(
-                                      onPressed: _isLoading ? null : _login,
+                                      onPressed: _login,
                                       style: ElevatedButton.styleFrom(
                                         backgroundColor: Color(0xFF2E86DE),
                                         foregroundColor: Colors.white,
@@ -611,23 +534,14 @@ class _LoginScreenState extends State<LoginScreen>
                                         disabledBackgroundColor:
                                             Color(0xFF2E86DE).withOpacity(0.6),
                                       ),
-                                      child: _isLoading
-                                          ? SizedBox(
-                                              height: 24,
-                                              width: 24,
-                                              child: CircularProgressIndicator(
-                                                color: Colors.white,
-                                                strokeWidth: 2.5,
-                                              ),
-                                            )
-                                          : Text(
-                                              "Sign In",
-                                              style: TextStyle(
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.bold,
-                                                letterSpacing: 0.5,
-                                              ),
-                                            ),
+                                      child: Text(
+                                        "Sign In",
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                          letterSpacing: 0.5,
+                                        ),
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -637,7 +551,7 @@ class _LoginScreenState extends State<LoginScreen>
                             Column(
                               children: [
                                 Text(
-                                  "Or continue with",
+                                  "Or sign in with",
                                   style: TextStyle(
                                     color: Colors.white,
                                     fontSize: 16,
@@ -645,30 +559,37 @@ class _LoginScreenState extends State<LoginScreen>
                                   ),
                                 ),
                                 const SizedBox(height: 16),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    _buildSocialButton(
-                                      icon: Icons.g_mobiledata,
-                                      color: Colors.white,
-                                      backgroundColor: Colors.red,
-                                      onPressed: _signInWithGoogle,
+                                SizedBox(
+                                  width: double.infinity,
+                                  height: 56,
+                                  child: ElevatedButton(
+                                    onPressed: _signInWithGoogle,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.white,
+                                      foregroundColor: Colors.black87,
+                                      elevation: 2,
+                                      shadowColor:
+                                          Colors.black.withOpacity(0.3),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
                                     ),
-                                    const SizedBox(width: 16),
-                                    _buildSocialButton(
-                                      icon: Icons.apple,
-                                      color: Colors.white,
-                                      backgroundColor: Colors.black,
-                                      onPressed: () {},
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Icon(Icons.g_mobiledata, size: 28),
+                                        SizedBox(width: 12),
+                                        Text(
+                                          "Sign in with Google",
+                                          style: TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
                                     ),
-                                    const SizedBox(width: 16),
-                                    _buildSocialButton(
-                                      icon: Icons.facebook,
-                                      color: Colors.white,
-                                      backgroundColor: Colors.blue[800]!,
-                                      onPressed: () {},
-                                    ),
-                                  ],
+                                  ),
                                 ),
                               ],
                             ),
@@ -748,6 +669,14 @@ class _LoginScreenState extends State<LoginScreen>
         obscureText: obscureText ?? false,
         keyboardType: keyboardType,
         style: TextStyle(fontSize: 16),
+        onChanged: (value) {
+          // Clear error when typing
+          if (_loginError != null) {
+            setState(() {
+              _loginError = null;
+            });
+          }
+        },
         decoration: InputDecoration(
           labelText: label,
           labelStyle: TextStyle(
@@ -779,44 +708,6 @@ class _LoginScreenState extends State<LoginScreen>
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(16),
             borderSide: BorderSide(color: Color(0xFF2E86DE), width: 1.5),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSocialButton({
-    required IconData icon,
-    required Color color,
-    required Color backgroundColor,
-    required VoidCallback onPressed,
-  }) {
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 8,
-            offset: Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Material(
-        color: backgroundColor,
-        borderRadius: BorderRadius.circular(14),
-        child: InkWell(
-          onTap: onPressed,
-          borderRadius: BorderRadius.circular(14),
-          child: Container(
-            padding: EdgeInsets.all(12),
-            width: 52,
-            height: 52,
-            child: Icon(
-              icon,
-              color: color,
-              size: 28,
-            ),
           ),
         ),
       ),

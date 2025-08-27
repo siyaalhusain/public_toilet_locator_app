@@ -38,37 +38,27 @@ class _NotificationPageState extends State<NotificationPage> {
     }
   }
 
-  // Fetch notifications from Firestore with role filtering
   Stream<List<Map<String, dynamic>>> _getNotifications() {
-    if (_currentUserRole == null) return Stream.value([]);
-
     User? user = _auth.currentUser;
     if (user == null) return Stream.value([]);
 
     return _firestore
         .collection('notifications')
-        .where('userId', isEqualTo: user.uid)
-        .orderBy('timestamp', descending: true)
+        .where('isAdminNotification', isEqualTo: true)
+        .orderBy('createdAt', descending: true)
         .snapshots()
         .map((snapshot) {
       return snapshot.docs.map((doc) {
         return {
           'id': doc.id,
+          'title': doc['title'] ?? 'Notification',
           'message': doc['message'],
-          'sender': doc['sender'] ?? 'System',
-          'timestamp': doc['timestamp'],
-          'isRead': doc['isRead'] ?? false,
           'type': doc['type'] ?? 'general',
-          'image': doc['image'],
-          'actionUrl': doc['actionUrl'],
+          'isRead': doc['isRead'] ?? false,
+          'createdAt': doc['createdAt'],
           'relatedPage': doc['relatedPage'],
-          'relatedId': doc['relatedId'],
-          'role': doc['role'] ?? 'user',
+          'relatedId': doc['relatedUserId'],
         };
-      }).where((notification) {
-        // Filter notifications by role (either personal or role-based)
-        return notification['userId'] == user.uid ||
-            notification['role'] == _currentUserRole;
       }).toList();
     });
   }
@@ -210,61 +200,19 @@ class _NotificationPageState extends State<NotificationPage> {
   }
 
   void _handleNotificationTap(Map<String, dynamic> notification) {
-    // Mark as read when tapped
     if (!notification['isRead']) {
       _markAsRead(notification['id']);
     }
 
-    // Handle navigation based on relatedPage
-    String? relatedPage = notification['relatedPage'];
-    String? relatedId = notification['relatedId'];
-
-    switch (relatedPage) {
-      case 'reports':
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (context) => ViewReportsPage()),
-        );
-        break;
-      case 'counting':
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (context) => OwnerCountingPage()),
-        );
-        break;
-      case 'tasks':
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (context) => ViewAssignedTasksPage()),
-        );
-        break;
-      case 'comments':
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (context) => AddCommentPage()),
-        );
-        break;
-      case 'payments':
+    switch (notification['type']) {
+      case 'renewal_request':
+      case 'new_owner':
         Navigator.push(
           context,
           MaterialPageRoute(
               builder: (context) => AdminPaymentVerificationScreen()),
         );
         break;
-      case 'profile':
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-              builder: (context) =>
-                  ProfilePage(role: 'user')), // Add the required role parameter
-        );
-        break;
-      default:
-        // Handle general notifications or URLs
-        if (notification['actionUrl'] != null) {
-          // Launch URL if available
-          // launchUrl(Uri.parse(notification['actionUrl']));
-        }
     }
   }
 
@@ -316,7 +264,6 @@ class _NotificationPageState extends State<NotificationPage> {
                           title: Text('Notification settings'),
                           onTap: () {
                             Navigator.pop(context);
-                            // Navigate to settings
                           },
                         ),
                       ],
@@ -373,7 +320,6 @@ class _NotificationPageState extends State<NotificationPage> {
 
             final notifications = snapshot.data!;
 
-            // Group notifications by date
             Map<String, List<Map<String, dynamic>>> groupedNotifications = {};
             for (var notification in notifications) {
               final timestamp = notification['timestamp'] as Timestamp;
@@ -386,7 +332,6 @@ class _NotificationPageState extends State<NotificationPage> {
               groupedNotifications[date]!.add(notification);
             }
 
-            // Sort dates
             final sortedDates = groupedNotifications.keys.toList()
               ..sort((a, b) => b.compareTo(a));
 
@@ -398,7 +343,6 @@ class _NotificationPageState extends State<NotificationPage> {
                 final date = sortedDates[dateIndex];
                 final dateNotifications = groupedNotifications[date]!;
 
-                // Format date header
                 final headerDate = DateTime.parse(date);
                 final now = DateTime.now();
                 String headerText;
@@ -412,7 +356,7 @@ class _NotificationPageState extends State<NotificationPage> {
                     headerDate.day == now.day - 1) {
                   headerText = 'Yesterday';
                 } else if (now.difference(headerDate).inDays < 7) {
-                  headerText = DateFormat('EEEE').format(headerDate); // Weekday
+                  headerText = DateFormat('EEEE').format(headerDate);
                 } else if (headerDate.year == now.year) {
                   headerText = DateFormat('MMMM d').format(headerDate);
                 } else {
@@ -455,11 +399,9 @@ class _NotificationPageState extends State<NotificationPage> {
                         ),
                         confirmDismiss: (direction) async {
                           if (direction == DismissDirection.startToEnd) {
-                            // Mark as read
                             await _markAsRead(notification['id']);
                             return false;
                           } else {
-                            // Delete confirmation
                             return await showDialog(
                               context: context,
                               builder: (BuildContext context) {
@@ -512,7 +454,6 @@ class _NotificationPageState extends State<NotificationPage> {
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  // Icon or image
                                   Container(
                                     width: 50,
                                     height: 50,
@@ -544,8 +485,6 @@ class _NotificationPageState extends State<NotificationPage> {
                                           ),
                                   ),
                                   SizedBox(width: 16),
-
-                                  // Content
                                   Expanded(
                                     child: Column(
                                       crossAxisAlignment:
@@ -574,15 +513,6 @@ class _NotificationPageState extends State<NotificationPage> {
                                         SizedBox(height: 6),
                                         Row(
                                           children: [
-                                            Text(
-                                              notification['sender'],
-                                              style: TextStyle(
-                                                color: Colors.grey[600],
-                                                fontWeight: FontWeight.w500,
-                                                fontSize: 13,
-                                              ),
-                                            ),
-                                            SizedBox(width: 8),
                                             Expanded(
                                               child: Text(
                                                 _formatTimestamp(

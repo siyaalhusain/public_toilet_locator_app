@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "cors": "^2.8.5",
+    "firebase-admin": "^11.11.1",
+    "firebase-functions": "^6.3.2",
+    "nodemailer": "^7.0.3"
+  }
+}

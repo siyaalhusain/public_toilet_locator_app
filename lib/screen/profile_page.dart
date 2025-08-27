@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:project_x/screen/ManageUser.dart';
+import 'package:project_x/screen/renew_subscription_page.dart';
 import 'package:project_x/screen/update_maintanance_status.dart';
 import 'package:project_x/screen/user_counting_page.dart';
 import 'package:project_x/screen/view_counting_page.dart';
@@ -10,7 +12,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:io';
-
+import 'package:project_x/screen/admin_notifications_page.dart';
 import 'AddCommentPage.dart';
 import 'AddMaintainerPage.dart';
 import 'AddToiletPage.dart';
@@ -20,13 +22,21 @@ import 'ReportIssuePage.dart';
 import 'ViewReportsPage.dart';
 import 'View_assign_task.dart';
 import 'contact_us_page.dart';
+import 'owner_notfication_page.dart';
 import 'view_reviews_page.dart';
 import 'admin_payment_verification_screen.dart';
 
 class ProfilePage extends StatefulWidget {
   final String role;
+  final bool isAccountActive; // Add this parameter
+  final String? paymentStatus; // Add this parameter
 
-  const ProfilePage({Key? key, required this.role}) : super(key: key);
+  const ProfilePage({
+    Key? key,
+    required this.role,
+    this.isAccountActive = true, // Default to true
+    this.paymentStatus, // Add this
+  }) : super(key: key);
 
   @override
   _ProfilePageState createState() => _ProfilePageState();
@@ -42,6 +52,8 @@ class _ProfilePageState extends State<ProfilePage> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final ImagePicker _picker = ImagePicker();
+  int _unreadNotificationsCount = 0;
+  StreamSubscription<QuerySnapshot>? _notificationsSubscription;
 
   // Enhanced Role Configuration with Sophisticated Color Palette
   static const Map<String, RoleConfig> _roleConfigs = {
@@ -79,6 +91,33 @@ class _ProfilePageState extends State<ProfilePage> {
   void initState() {
     super.initState();
     _loadUserData();
+    _setupNotificationsListener();
+  }
+
+  @override
+  void dispose() {
+    _notificationsSubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _setupNotificationsListener() async {
+    if (widget.role != 'Admin') return;
+
+    final currentUser = _auth.currentUser;
+    if (currentUser == null) return;
+
+    _notificationsSubscription = _firestore
+        .collection('notifications')
+        .where('userId', isEqualTo: currentUser.uid)
+        .where('isRead', isEqualTo: false)
+        .snapshots()
+        .listen((snapshot) {
+      if (mounted) {
+        setState(() {
+          _unreadNotificationsCount = snapshot.size;
+        });
+      }
+    });
   }
 
   Future<void> _loadUserData() async {
@@ -87,16 +126,13 @@ class _ProfilePageState extends State<ProfilePage> {
     });
 
     try {
-      // Get current user from Firebase Auth
       User? currentUser = _auth.currentUser;
 
       if (currentUser != null) {
-        // Get user data from Firestore
         DocumentSnapshot userDoc =
             await _firestore.collection('users').doc(currentUser.uid).get();
 
         setState(() {
-          // Set user data from Firestore if available, otherwise use Auth data
           if (userDoc.exists) {
             Map<String, dynamic> userData =
                 userDoc.data() as Map<String, dynamic>;
@@ -107,12 +143,10 @@ class _ProfilePageState extends State<ProfilePage> {
             userPhotoUrl = currentUser.photoURL;
           }
 
-          // Set email from Auth
           userEmail = currentUser.email;
           isLoading = false;
         });
 
-        // Also save to SharedPreferences for offline access
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('userName', userName ?? 'User');
         await prefs.setString('userEmail', userEmail ?? '');
@@ -120,7 +154,6 @@ class _ProfilePageState extends State<ProfilePage> {
           await prefs.setString('userPhotoUrl', userPhotoUrl!);
         }
       } else {
-        // Fallback to SharedPreferences if user is not logged in
         final prefs = await SharedPreferences.getInstance();
         setState(() {
           userName = prefs.getString('userName') ?? 'User';
@@ -130,10 +163,7 @@ class _ProfilePageState extends State<ProfilePage> {
         });
       }
     } catch (e) {
-      // Error handling
       print('Error loading user data: $e');
-
-      // Fallback to SharedPreferences
       final prefs = await SharedPreferences.getInstance();
       setState(() {
         userName = prefs.getString('userName') ?? 'User';
@@ -171,27 +201,22 @@ class _ProfilePageState extends State<ProfilePage> {
         throw Exception('User not logged in');
       }
 
-      // Generate unique filename with user ID to ensure user-specific storage
       final String fileName =
           'profile_images/${currentUser.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
-      // Upload to Firebase Storage
       final Reference storageRef = _storage.ref().child(fileName);
       final UploadTask uploadTask = storageRef.putFile(_profileImage!);
       final TaskSnapshot snapshot = await uploadTask;
       final String downloadUrl = await snapshot.ref.getDownloadURL();
 
-      // Update Firestore user document
       await _firestore.collection('users').doc(currentUser.uid).set({
         'photoUrl': downloadUrl,
         'name': userName,
         'lastUpdated': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
-      // Update Auth user profile
       await currentUser.updatePhotoURL(downloadUrl);
 
-      // Save to SharedPreferences
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('userPhotoUrl', downloadUrl);
 
@@ -224,25 +249,18 @@ class _ProfilePageState extends State<ProfilePage> {
         throw Exception('User not logged in');
       }
 
-      // If the image is stored in Firebase Storage, delete it
       if (userPhotoUrl != null && userPhotoUrl!.contains('firebase')) {
-        // Extract file path from URL
         String filePath = userPhotoUrl!.split('/o/')[1].split('?')[0];
         filePath = Uri.decodeFull(filePath);
-
-        // Delete from Firebase Storage
         await _storage.ref().child(filePath).delete();
       }
 
-      // Update Firestore user document
       await _firestore.collection('users').doc(currentUser.uid).update({
         'photoUrl': FieldValue.delete(),
       });
 
-      // Update Auth user profile
       await currentUser.updatePhotoURL(null);
 
-      // Remove from SharedPreferences
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('userPhotoUrl');
 
@@ -396,7 +414,6 @@ class _ProfilePageState extends State<ProfilePage> {
                     try {
                       User? currentUser = _auth.currentUser;
                       if (currentUser != null) {
-                        // Update Firestore user document
                         await _firestore
                             .collection('users')
                             .doc(currentUser.uid)
@@ -405,7 +422,6 @@ class _ProfilePageState extends State<ProfilePage> {
                           'lastUpdated': FieldValue.serverTimestamp(),
                         }, SetOptions(merge: true));
 
-                        // Update Auth user profile
                         await currentUser
                             .updateDisplayName(nameController.text);
                       }
@@ -438,145 +454,6 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    // Get role configuration
-    final roleConfig = _roleConfigs[widget.role] ?? _roleConfigs['User']!;
-
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.dark,
-        systemNavigationBarColor: roleConfig.backgroundColor,
-        systemNavigationBarIconBrightness: Brightness.dark,
-      ),
-      child: Scaffold(
-        backgroundColor: roleConfig.backgroundColor,
-        body: SafeArea(
-          child: CustomScrollView(
-            physics: const BouncingScrollPhysics(),
-            slivers: [
-              // Animated App Bar
-// The main issue is in the FlexibleSpaceBar part of the SliverAppBar
-// Here's the fixed code for that section:
-
-              SliverAppBar(
-                expandedHeight: 220.0,
-                floating: false,
-                pinned: true,
-                backgroundColor: roleConfig.primaryColor,
-                flexibleSpace: FlexibleSpaceBar(
-                  centerTitle: true,
-                  title: Text(
-                    '${widget.role} Profile',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      shadows: [
-                        Shadow(
-                          blurRadius: 10.0,
-                          color: Colors.black38,
-                          offset: Offset(1.0, 1.0),
-                        ),
-                      ],
-                    ),
-                  ),
-                  background: Container(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [
-                          roleConfig.primaryColor,
-                          roleConfig.accentColor,
-                        ],
-                      ),
-                    ),
-                    child: Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          GestureDetector(
-                            onTap: _pickProfileImage,
-                            child: Container(
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black26,
-                                    blurRadius: 20,
-                                    offset: Offset(0, 10),
-                                  )
-                                ],
-                              ),
-                              child: isLoading
-                                  ? CircularProgressIndicator(
-                                      valueColor: AlwaysStoppedAnimation<Color>(
-                                          Colors.white),
-                                    )
-                                  : userPhotoUrl != null
-                                      ? CircleAvatar(
-                                          radius: 60,
-                                          backgroundImage:
-                                              NetworkImage(userPhotoUrl!),
-                                          backgroundColor: Colors.transparent,
-                                        )
-                                      : CircleAvatar(
-                                          radius: 60,
-                                          backgroundColor: Colors.white24,
-                                          child: Text(
-                                            userName != null &&
-                                                    userName!.isNotEmpty
-                                                ? userName![0].toUpperCase()
-                                                : 'U',
-                                            style: TextStyle(
-                                              fontSize: 48,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.white,
-                                            ),
-                                          ),
-                                        ),
-                            ),
-                          ),
-                          // Remove the name and email from here to avoid overlap with the app bar title
-                          // We'll show them only in the welcome section below
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                actions: [
-                  IconButton(
-                    icon: Icon(Icons.edit, color: Colors.white),
-                    onPressed: () => _showEditProfileDialog(context),
-                  ),
-                ],
-              ),
-
-              // Main Content
-              SliverPadding(
-                padding: const EdgeInsets.all(16.0),
-                sliver: SliverList(
-                  delegate: SliverChildListDelegate(
-                    [
-                      // Welcome Message
-                      _buildWelcomeSection(roleConfig),
-
-                      // Action Buttons
-                      ..._buildActionButtons(context, roleConfig),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  // Get appropriate icon based on role
   IconData _getIconForRole(String role) {
     switch (role) {
       case 'Admin':
@@ -592,7 +469,6 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  // Welcome Section
   Widget _buildWelcomeSection(RoleConfig roleConfig) {
     return Container(
       margin: const EdgeInsets.only(bottom: 24),
@@ -709,7 +585,6 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // Build Action Buttons
   List<Widget> _buildActionButtons(
       BuildContext context, RoleConfig roleConfig) {
     return _getActionsForRole(widget.role).map((action) {
@@ -826,17 +701,28 @@ class _ProfilePageState extends State<ProfilePage> {
     }).toList();
   }
 
-  // Get actions based on role
   List<RoleAction> _getActionsForRole(String role) {
+    // Get the account status from shared preferences or widget
+    bool isAccountActive = widget.isAccountActive;
+    String paymentStatus = widget.paymentStatus ?? 'pending';
+
     switch (role) {
       case 'Admin':
         return [
+          RoleAction(
+            title: 'Notifications',
+            subtitle: 'View pending actions',
+            icon: Icons.notifications,
+            page: AdminNotificationsPage(),
+            badge: _unreadNotificationsCount > 0
+                ? _unreadNotificationsCount.toString()
+                : null,
+          ),
           RoleAction(
             title: 'Verify Payments',
             subtitle: 'Approve or reject payment receipts',
             icon: Icons.payment_rounded,
             page: AdminPaymentVerificationScreen(),
-            badge: '4', // This could be dynamic based on pending payments count
           ),
           RoleAction(
             title: 'Manage Users',
@@ -845,52 +731,118 @@ class _ProfilePageState extends State<ProfilePage> {
           ),
         ];
       case 'Owner':
-        return [
-          RoleAction(
-            title: 'Add Toilets',
-            icon: Icons.add_location_rounded,
-            page: AddToiletPage(),
-          ),
-          RoleAction(
-            title: 'Manage Toilets',
-            icon: Icons.manage_search_rounded,
-            page: ManageToiletsPage(),
-          ),
-          RoleAction(
-            title: 'Add Maintainers',
-            icon: Icons.person_add_rounded,
-            page: ImprovedAddMaintainerPage(), // Updated class name
-          ),
-          RoleAction(
-            title: 'Manage Maintainers',
-            icon: Icons.manage_accounts_rounded,
-            page: ImprovedManageMaintainersPage(), // Updated class name
-          ),
-          RoleAction(
-            title: 'View Reports',
-            icon: Icons.report_rounded,
-            page: ViewReportsPage(),
-          ),
-          RoleAction(
-            title: 'Toilet Usage Statistics',
-            icon: Icons.bar_chart_rounded,
-            page: OwnerCountingPage(),
-          ),
-          RoleAction(
-            title: 'Contact Us',
-            icon: Icons.contact_support_rounded,
-            page: ContactUsPage(),
-          ),
-        ];
+        // Different access levels based on payment status
+        switch (paymentStatus.toLowerCase()) {
+          case 'approved':
+            // Active owner - show all features
+            return [
+              RoleAction(
+                title: 'Add Toilets',
+                icon: Icons.add_location_rounded,
+                page: AddToiletPage(),
+              ),
+              RoleAction(
+                title: 'Manage Toilets',
+                icon: Icons.manage_search_rounded,
+                page: ManageToiletsPage(),
+              ),
+              RoleAction(
+                title: 'Add Maintainers',
+                icon: Icons.person_add_rounded,
+                page: ImprovedAddMaintainerPage(),
+              ),
+              RoleAction(
+                title: 'Manage Maintainers',
+                icon: Icons.manage_accounts_rounded,
+                page: ImprovedManageMaintainersPage(),
+              ),
+              RoleAction(
+                title: 'View Reports',
+                icon: Icons.report_rounded,
+                page: ViewReportsPage(),
+              ),
+              RoleAction(
+                title: 'Toilet Usage Statistics',
+                icon: Icons.bar_chart_rounded,
+                page: OwnerCountingPage(),
+              ),
+              RoleAction(
+                title: 'Notifications',
+                icon: Icons.notifications,
+                page: OwnerNotificationsPage(),
+              ),
+              RoleAction(
+                title: 'Contact Us',
+                icon: Icons.contact_support_rounded,
+                page: ContactUsPage(),
+              ),
+            ];
+
+          case 'renew_pending':
+            // Renewal pending - limited access
+            return [
+              RoleAction(
+                title: 'Notifications',
+                icon: Icons.notifications,
+                page: OwnerNotificationsPage(),
+                badge: _unreadNotificationsCount > 0
+                    ? _unreadNotificationsCount.toString()
+                    : null,
+              ),
+              RoleAction(
+                title: 'Contact Us',
+                icon: Icons.contact_support_rounded,
+                page: ContactUsPage(),
+              ),
+            ];
+
+          case 'pending':
+            // New registration pending - most restricted access
+            return [
+              RoleAction(
+                title: 'Notifications',
+                icon: Icons.notifications,
+                page: OwnerNotificationsPage(),
+                badge: _unreadNotificationsCount > 0
+                    ? _unreadNotificationsCount.toString()
+                    : null,
+              ),
+              RoleAction(
+                title: 'Contact Us',
+                icon: Icons.contact_support_rounded,
+                page: ContactUsPage(),
+              ),
+            ];
+
+          default: // rejected, expired, etc.
+            return [
+              RoleAction(
+                title: 'Notifications',
+                icon: Icons.notifications,
+                page: OwnerNotificationsPage(),
+                badge: _unreadNotificationsCount > 0
+                    ? _unreadNotificationsCount.toString()
+                    : null,
+              ),
+              RoleAction(
+                title: 'Contact Us',
+                icon: Icons.contact_support_rounded,
+                page: ContactUsPage(),
+              ),
+              RoleAction(
+                title: 'Renew Subscription',
+                icon: Icons.autorenew,
+                page: RenewSubscriptionPage(),
+              ),
+            ];
+        }
+
       case 'User':
         return [
           RoleAction(
             title: 'View Reviews',
             icon: Icons.reviews_rounded,
-            page: ViewReviewsPage(
-              toiletId:
-                  'all', // Or implement a selector to let users choose a toilet
-            ),
+            page: ViewReviewsPage(toiletId: 'all'),
           ),
           RoleAction(
             title: 'Post Comment & Photo',
@@ -913,29 +865,196 @@ class _ProfilePageState extends State<ProfilePage> {
           RoleAction(
             title: 'Toilet User Counting',
             icon: Icons.numbers_rounded,
-            page: CounterPage(
-              toiletId: 'TOILET001', // Replace with actual toilet ID
-            ),
+            page: CounterPage(toiletId: 'TOILET001'),
           ),
           RoleAction(
             title: 'Update Maintenance Status',
             icon: Icons.construction_rounded,
-            page:
-                UpdateMaintenanceStatusPage(), // Point to our implemented page
+            page: UpdateMaintenanceStatusPage(),
           ),
           RoleAction(
             title: 'View My Tasks',
             icon: Icons.assignment,
-            page: const ViewAssignedTasksPage(), // Your target page
+            page: const ViewAssignedTasksPage(),
           ),
         ];
       default:
         return [];
     }
   }
+
+  @override
+  Widget build(BuildContext context) {
+    final roleConfig = _roleConfigs[widget.role] ?? _roleConfigs['User']!;
+
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        systemNavigationBarColor: roleConfig.backgroundColor,
+        systemNavigationBarIconBrightness: Brightness.dark,
+      ),
+      child: Scaffold(
+        backgroundColor: roleConfig.backgroundColor,
+        body: SafeArea(
+          child: CustomScrollView(
+            physics: const BouncingScrollPhysics(),
+            slivers: [
+              SliverAppBar(
+                expandedHeight: 220.0,
+                floating: false,
+                pinned: true,
+                backgroundColor: roleConfig.primaryColor,
+                flexibleSpace: FlexibleSpaceBar(
+                  centerTitle: true,
+                  title: Text(
+                    '${widget.role} Profile',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      shadows: [
+                        Shadow(
+                          blurRadius: 10.0,
+                          color: Colors.black38,
+                          offset: Offset(1.0, 1.0),
+                        ),
+                      ],
+                    ),
+                  ),
+                  background: Container(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          roleConfig.primaryColor,
+                          roleConfig.accentColor,
+                        ],
+                      ),
+                    ),
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          GestureDetector(
+                            onTap: _pickProfileImage,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black26,
+                                    blurRadius: 20,
+                                    offset: Offset(0, 10),
+                                  )
+                                ],
+                              ),
+                              child: isLoading
+                                  ? CircularProgressIndicator(
+                                      valueColor: AlwaysStoppedAnimation<Color>(
+                                          Colors.white),
+                                    )
+                                  : userPhotoUrl != null
+                                      ? CircleAvatar(
+                                          radius: 60,
+                                          backgroundImage:
+                                              NetworkImage(userPhotoUrl!),
+                                          backgroundColor: Colors.transparent,
+                                        )
+                                      : CircleAvatar(
+                                          radius: 60,
+                                          backgroundColor: Colors.white24,
+                                          child: Text(
+                                            userName != null &&
+                                                    userName!.isNotEmpty
+                                                ? userName![0].toUpperCase()
+                                                : 'U',
+                                            style: TextStyle(
+                                              fontSize: 48,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                actions: [
+                  if (widget.role == 'Admin')
+                    Stack(
+                      children: [
+                        IconButton(
+                          icon: Icon(Icons.notifications, color: Colors.white),
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (context) =>
+                                      AdminNotificationsPage()),
+                            ).then((_) {
+                              _setupNotificationsListener();
+                            });
+                          },
+                        ),
+                        if (_unreadNotificationsCount > 0)
+                          Positioned(
+                            right: 8,
+                            top: 8,
+                            child: Container(
+                              padding: EdgeInsets.all(4),
+                              decoration: BoxDecoration(
+                                color: Colors.red,
+                                shape: BoxShape.circle,
+                              ),
+                              constraints: BoxConstraints(
+                                minWidth: 16,
+                                minHeight: 16,
+                              ),
+                              child: Text(
+                                _unreadNotificationsCount > 9
+                                    ? '9+'
+                                    : _unreadNotificationsCount.toString(),
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  IconButton(
+                    icon: Icon(Icons.edit, color: Colors.white),
+                    onPressed: () => _showEditProfileDialog(context),
+                  ),
+                ],
+              ),
+              SliverPadding(
+                padding: const EdgeInsets.all(16.0),
+                sliver: SliverList(
+                  delegate: SliverChildListDelegate(
+                    [
+                      _buildWelcomeSection(roleConfig),
+                      ..._buildActionButtons(context, roleConfig),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
-// Role Configuration Class
 class RoleConfig {
   final Color primaryColor;
   final Color secondaryColor;
@@ -952,7 +1071,6 @@ class RoleConfig {
   });
 }
 
-// Role Action Class
 class RoleAction {
   final String title;
   final String? subtitle;
