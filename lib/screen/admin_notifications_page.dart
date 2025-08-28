@@ -5,7 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 
 import 'admin_payment_verification_screen.dart';
-
+// admin notification
 class AdminNotificationsPage extends StatefulWidget {
   const AdminNotificationsPage({Key? key}) : super(key: key);
 

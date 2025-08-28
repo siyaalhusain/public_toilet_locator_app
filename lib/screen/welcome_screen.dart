@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'login_page.dart';
 import 'dart:ui';
-
+// welcome page
 class WelcomePage extends StatefulWidget {
   @override
   State<WelcomePage> createState() => _WelcomePageState();
