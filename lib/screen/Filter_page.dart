@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-
+// Filter
 class FilterPage extends StatefulWidget {
   final Function(String, List<String>) onApplyFilter;
 

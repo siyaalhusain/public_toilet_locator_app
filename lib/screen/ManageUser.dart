@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
+// Manage Users
 class ManageUsersPage extends StatefulWidget {
   @override
   _ManageUsersPageState createState() => _ManageUsersPageState();
