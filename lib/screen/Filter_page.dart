@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 //filter page
 class FilterPage extends StatefulWidget {
   final Function(String, List<String>) onApplyFilter;
-
+//comments
   FilterPage({required this.onApplyFilter});
 
   @override
