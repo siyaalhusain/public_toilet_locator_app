@@ -12,6 +12,7 @@ class MapSelectionPage extends StatefulWidget {
   _MapSelectionPageState createState() => _MapSelectionPageState();
 }
 
+// map selecton
 class _MapSelectionPageState extends State<MapSelectionPage> {
   late GoogleMapController mapController;
   Set<Marker> _markers = {};
@@ -77,6 +78,7 @@ class _MapSelectionPageState extends State<MapSelectionPage> {
     }
   }
 
+  
   // Move camera to user's location
   void _moveCameraToCurrentLocation() async {
     if (_currentLocation != null) {
@@ -116,6 +118,7 @@ class _MapSelectionPageState extends State<MapSelectionPage> {
         );
       }
 
+      
       // Loop through Firestore documents and add markers
       for (var doc in querySnapshot.docs) {
         var data = doc.data() as Map<String, dynamic>;
@@ -157,7 +160,7 @@ class _MapSelectionPageState extends State<MapSelectionPage> {
     }
   }
 
-  // Handle toilet selection
+  // Handle toilets
   void _onToiletSelected(String toiletId, String toiletName) {
     showDialog(
       context: context,
