@@ -14,7 +14,7 @@ class ToiletProvider with ChangeNotifier {
     _selectedToiletName = name;
     notifyListeners(); // Notify UI to update
   }
-
+// Clear Screen
   void clearSelection() {
     _selectedToiletId = null;
     _selectedToiletName = null;
