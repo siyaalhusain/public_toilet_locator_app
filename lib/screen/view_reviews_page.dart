@@ -11,7 +11,7 @@ import 'AddCommentPage.dart';
 //COMMENTS
 class _ToiletDetailsDialog extends StatelessWidget {
   final Map<String, dynamic> toiletData;
-
+//view page
   const _ToiletDetailsDialog({required this.toiletData});
 
   @override
