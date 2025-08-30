@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-//ToiletProvider
+//Toilet Provider
 class ToiletProvider with ChangeNotifier {
   String? _selectedToiletId;
   String? _selectedToiletName;
