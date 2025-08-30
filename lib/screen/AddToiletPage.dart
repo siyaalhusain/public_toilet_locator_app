@@ -18,7 +18,7 @@ class AddToiletPage extends StatefulWidget {
   final bool isEditing;
   final String? toiletId;
   final Map<String, dynamic>? toiletData;
-
+//add
   const AddToiletPage({
     Key? key,
     this.isEditing = false,
