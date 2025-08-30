@@ -624,4 +624,4 @@ class Location {
     required this.latitude,
     required this.longitude,
   });
-}
+}//end
