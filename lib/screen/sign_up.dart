@@ -7,7 +7,7 @@ import 'dart:ui';
 import 'home_page.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:url_launcher/url_launcher.dart';
-
+//
 // Create a new class for subscription plans
 class SubscriptionPlan {
   final String id;
