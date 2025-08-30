@@ -8,7 +8,7 @@ class ManageToiletsPage extends StatefulWidget {
   @override
   _ManageToiletsPageState createState() => _ManageToiletsPageState();
 }
-
+//comments
 class _ManageToiletsPageState extends State<ManageToiletsPage> {
   final CollectionReference toiletsCollection =
       FirebaseFirestore.instance.collection('toilets');
