@@ -9,6 +9,7 @@ class ToiletProvider with ChangeNotifier {
   String? get selectedToiletId => _selectedToiletId;
   String? get selectedToiletName => _selectedToiletName;
 
+  // set toilets
   void setToilet(String id, String name) {
     _selectedToiletId = id;
     _selectedToiletName = name;
