@@ -8,6 +8,8 @@ import 'sign_up.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
+
+// Login Screen design
 class LoginScreen extends StatefulWidget {
   final String? errorMessage;
 
