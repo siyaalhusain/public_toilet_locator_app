@@ -8,7 +8,7 @@ import 'package:intl/intl.dart';
 import 'dart:convert';
 import 'dart:math' as Math;
 import 'AddCommentPage.dart';
-
+// toilet details
 class _ToiletDetailsDialog extends StatelessWidget {
   final Map<String, dynamic> toiletData;
 
